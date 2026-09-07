@@ -161,6 +161,13 @@ alter table public.set_state          enable row level security;
 alter table public.set_holidays       enable row level security;
 alter table public.settings           enable row level security;
 
+-- Start from zero regardless of the project's default privileges (older projects granted ALL to
+-- anon/authenticated on every new table), then grant only what the PWA needs.
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+revoke all on all functions in schema public from anon, authenticated;
+revoke all on schema public from anon;
+
 grant usage on schema public to authenticated, service_role;
 grant select on public.alerts, public.alerts_with_delivery, public.push_deliveries, public.heartbeats,
                 public.set_state, public.set_holidays, public.settings to authenticated;
