@@ -1,0 +1,2 @@
+"""XAUUSD MACD watcher backend."""
+

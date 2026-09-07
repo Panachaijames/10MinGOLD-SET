@@ -1,0 +1,275 @@
+// Web Push fan-out. Called by:
+//   - the alerts INSERT trigger (ops.alerts_notify -> pg_net, body {type:'INSERT', record})
+//   - pg_cron ops.push_sweep() with {mode:'sweep'} to retry pending deliveries
+//   - the PWA "Send test" button with {mode:'test'} and a user JWT
+// Responds 202 quickly and does the sending in the background (EdgeRuntime.waitUntil).
+import {
+  ApplicationServer,
+  importVapidKeys,
+  PushMessageError,
+  Urgency,
+  type PushSubscription,
+} from "@negrel/webpush";
+import { isSecretCaller, isUserCaller, unauthorized } from "../_shared/auth.ts";
+import { adminClient, corsHeaders, getSetting, heartbeat } from "../_shared/db.ts";
+
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
+
+interface AlertRow {
+  id: string;
+  source: string;
+  symbol: string;
+  timeframe: number;
+  direction: string;
+  bar_time: string;
+  bar_close: string | null;
+  title: string;
+  body: string;
+}
+
+interface SubscriptionRow {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  platform: string | null;
+}
+
+interface DeliveryRow {
+  id: string;
+  alert_id: string | null;
+  endpoint: string;
+  kind: string;
+  attempts: number;
+  receipt_token_hash: string;
+}
+
+let serverPromise: Promise<ApplicationServer> | null = null;
+
+function applicationServer(): Promise<ApplicationServer> {
+  if (!serverPromise) {
+    serverPromise = (async () => {
+      const raw = Deno.env.get("VAPID_KEYS_JWK");
+      if (!raw) throw new Error("VAPID_KEYS_JWK secret is not set (JSON with publicKey/privateKey JWKs)");
+      const vapidKeys = await importVapidKeys(JSON.parse(raw));
+      return ApplicationServer.new({
+        contactInformation: Deno.env.get("VAPID_SUBJECT") ?? "mailto:alerts@example.com",
+        vapidKeys,
+      });
+    })();
+  }
+  return serverPromise;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomToken(bytes = 24): string {
+  const buffer = new Uint8Array(bytes);
+  crypto.getRandomValues(buffer);
+  return btoa(String.fromCharCode(...buffer)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function topicFor(alert: AlertRow): string {
+  const raw = `${alert.symbol}-m${alert.timeframe}-${alert.direction.slice(0, 4)}`.toLowerCase();
+  return raw.replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
+}
+
+function buildPayload(alert: AlertRow | null, delivery: { id: string; token: string }, kind: string) {
+  const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "/").replace(/\/?$/, "/");
+  const receiptUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/push-receipt`;
+  const title = alert?.title ?? "Aurum Signal test";
+  const body = alert?.body ?? "Web Push is connected. This device can receive alerts with the app closed.";
+  const navigate = alert ? `${appUrl}?alert=${encodeURIComponent(alert.id)}` : appUrl;
+  const tag = alert ? topicFor(alert) : `test-${delivery.id.slice(0, 8)}`;
+  return {
+    // Declarative Web Push (iOS 18.4+) renders this directly; other browsers hand the same
+    // JSON to the service worker. No app_badge until it is verified on the real device.
+    web_push: 8030,
+    notification: { title, body, navigate, tag, silent: false },
+    title,
+    body,
+    kind,
+    eventId: alert?.id ?? `test:${delivery.id}`,
+    symbol: alert?.symbol,
+    timeframe: alert ? `M${alert.timeframe}` : undefined,
+    direction: alert?.direction,
+    barClose: alert?.bar_close,
+    url: navigate,
+    deliveryId: delivery.id,
+    receiptToken: delivery.token,
+    receiptUrl,
+    sentAt: new Date().toISOString(),
+  };
+}
+
+async function sendOne(
+  subscription: SubscriptionRow,
+  payload: Record<string, unknown>,
+  ttl: number,
+  topic: string | undefined,
+): Promise<{ ok: boolean; status?: number; error?: string; gone?: boolean }> {
+  try {
+    const server = await applicationServer();
+    const target: PushSubscription = {
+      endpoint: subscription.endpoint,
+      keys: { auth: subscription.auth, p256dh: subscription.p256dh },
+    };
+    await server.subscribe(target).pushTextMessage(JSON.stringify(payload), { ttl, urgency: Urgency.High, topic });
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof PushMessageError) {
+      const status = error.response.status;
+      return { ok: false, status, gone: error.isGone() || status === 404 || status === 410, error: `HTTP ${status}` };
+    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function fanOut(alert: AlertRow | null, kind: "alert" | "test") {
+  const client = adminClient();
+  const ttl = await getSetting<number>(client, "push_ttl_seconds", 600);
+  const { data: subscriptions, error } = await client
+    .from("push_subscriptions")
+    .select("endpoint,p256dh,auth,platform")
+    .eq("enabled", true);
+  if (error) throw error;
+  const result = { subscriptions: subscriptions?.length ?? 0, accepted: 0, failed: 0, skipped: 0 };
+  const topic = alert ? topicFor(alert) : undefined;
+
+  for (const subscription of (subscriptions ?? []) as SubscriptionRow[]) {
+    const token = randomToken();
+    const { data: inserted } = await client
+      .from("push_deliveries")
+      .upsert(
+        {
+          alert_id: alert?.id ?? null,
+          endpoint: subscription.endpoint,
+          kind,
+          status: "pending",
+          receipt_token_hash: await sha256Hex(token),
+        },
+        { onConflict: "alert_id,endpoint", ignoreDuplicates: true },
+      )
+      .select("id");
+    // A row already existed for this alert+device: another invocation owns it (sweeper handles retries).
+    if (!inserted?.length) {
+      if (alert) {
+        result.skipped++;
+        continue;
+      }
+    }
+    const deliveryId = inserted?.[0]?.id as string | undefined;
+    if (!deliveryId) {
+      result.skipped++;
+      continue;
+    }
+    const outcome = await sendOne(subscription, buildPayload(alert, { id: deliveryId, token }, kind), ttl, topic);
+    await recordOutcome(client, deliveryId, subscription.endpoint, outcome, 1);
+    outcome.ok ? result.accepted++ : result.failed++;
+  }
+  await heartbeat(client, "push_fanout", true, { last_kind: kind, ...result });
+  return result;
+}
+
+async function recordOutcome(
+  client: ReturnType<typeof adminClient>,
+  deliveryId: string,
+  endpoint: string,
+  outcome: { ok: boolean; status?: number; error?: string; gone?: boolean },
+  attempts: number,
+) {
+  const now = new Date().toISOString();
+  if (outcome.ok) {
+    await client.from("push_deliveries").update({ status: "accepted", accepted_at: now, attempts, last_error: null }).eq("id", deliveryId);
+    await client.from("push_subscriptions").update({ last_ok_at: now, last_error: null, fail_count: 0 }).eq("endpoint", endpoint);
+    return;
+  }
+  const permanent = outcome.gone || [400, 401, 403, 413].includes(outcome.status ?? 0);
+  await client
+    .from("push_deliveries")
+    .update({ status: permanent ? "failed" : "pending", attempts, last_error: outcome.error ?? "unknown" })
+    .eq("id", deliveryId);
+  if (outcome.gone) {
+    await client.from("push_subscriptions").update({ enabled: false, last_error: outcome.error ?? "gone" }).eq("endpoint", endpoint);
+  } else {
+    await client.from("push_subscriptions").update({ last_error: outcome.error ?? "unknown" }).eq("endpoint", endpoint);
+  }
+}
+
+async function sweep() {
+  const client = adminClient();
+  const ttl = await getSetting<number>(client, "push_ttl_seconds", 600);
+  const { data: pending, error } = await client
+    .from("push_deliveries")
+    .select("id,alert_id,endpoint,kind,attempts,receipt_token_hash")
+    .eq("status", "pending")
+    .lt("attempts", 6)
+    .gte("created_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
+    .limit(50);
+  if (error) throw error;
+  const result = { pending: pending?.length ?? 0, accepted: 0, failed: 0 };
+  for (const delivery of (pending ?? []) as DeliveryRow[]) {
+    const [{ data: subscription }, { data: alert }] = await Promise.all([
+      client.from("push_subscriptions").select("endpoint,p256dh,auth,platform").eq("endpoint", delivery.endpoint).eq("enabled", true).maybeSingle(),
+      delivery.alert_id
+        ? client.from("alerts").select("id,source,symbol,timeframe,direction,bar_time,bar_close,title,body").eq("id", delivery.alert_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
+    if (!subscription) {
+      await client.from("push_deliveries").update({ status: "dead", last_error: "subscription disabled" }).eq("id", delivery.id);
+      continue;
+    }
+    // A fresh receipt token is issued for the retry so the hash on file stays valid.
+    const token = randomToken();
+    await client.from("push_deliveries").update({ receipt_token_hash: await sha256Hex(token) }).eq("id", delivery.id);
+    const alertRow = (alert as AlertRow | null) ?? null;
+    const outcome = await sendOne(
+      subscription as SubscriptionRow,
+      buildPayload(alertRow, { id: delivery.id, token }, delivery.kind),
+      ttl,
+      alertRow ? topicFor(alertRow) : undefined,
+    );
+    await recordOutcome(client, delivery.id, delivery.endpoint, outcome, delivery.attempts + 1);
+    outcome.ok ? result.accepted++ : result.failed++;
+  }
+  await heartbeat(client, "push_fanout", true, { last_kind: "sweep", ...result });
+  return result;
+}
+
+Deno.serve(async (req) => {
+  const headers = corsHeaders();
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+  if (req.method !== "POST") return new Response("method not allowed", { status: 405, headers });
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = await req.json();
+  } catch {
+    body = {};
+  }
+  const mode = (body.mode as string | undefined) ?? (body.type === "INSERT" && body.record ? "webhook" : "unknown");
+
+  const secret = isSecretCaller(req);
+  if (mode === "test") {
+    if (!secret && !(await isUserCaller(req))) return unauthorized();
+    // The user is waiting for the result, so send synchronously.
+    const result = await fanOut(null, "test");
+    return Response.json({ ok: true, ...result }, { headers });
+  }
+  if (!secret) return unauthorized();
+
+  if (mode === "webhook") {
+    const record = body.record as AlertRow;
+    const work = fanOut(record, "alert").catch((error) => console.error("fan-out failed", error));
+    if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(work);
+    else await work;
+    return Response.json({ accepted: true, alert_id: record.id }, { status: 202, headers });
+  }
+  if (mode === "sweep") {
+    const result = await sweep();
+    return Response.json({ ok: true, ...result }, { headers });
+  }
+  return Response.json({ error: `unknown mode ${mode}` }, { status: 400, headers });
+});
