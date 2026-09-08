@@ -1,6 +1,7 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertRecord, PublicConfig, StatusResponse, TimeframeState } from "./api";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertRecord, CandleSeries, PublicConfig, SetMacdPoint, SetTickerState, StatusResponse, TimeframeState } from "./api";
 import { createBackend } from "./backend";
+import { CandleChart, MacdChart } from "./charts";
 
 const backend = createBackend();
 
@@ -104,20 +105,87 @@ export default function App() {
   const [clock, setClock] = useState(Date.now());
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [standalone, setStandalone] = useState(window.matchMedia("(display-mode: standalone)").matches);
+  const [timeframe, setTimeframe] = useState<number>(() => Number(localStorage.getItem("aurum-timeframe")) || 10);
+  const [candlesByTf, setCandlesByTf] = useState<Record<number, CandleSeries>>({});
+  const [chartError, setChartError] = useState("");
+  const [setTickers, setSetTickers] = useState<SetTickerState[]>([]);
+  const [setPanelError, setSetPanelError] = useState("");
+  const [selectedSet, setSelectedSet] = useState<string>("");
+  const [setHistory, setSetHistory] = useState<SetMacdPoint[]>([]);
   const highlightedAlert = useMemo(() => new URLSearchParams(window.location.search).get("alert"), []);
+  const refreshing = useRef(false);
+  const candleKey = useRef<Record<number, string>>({});
 
   const refresh = useCallback(async (quiet = false) => {
-    if (!authed) return;
+    if (!authed || refreshing.current) return;
+    refreshing.current = true;
     try {
       const [nextStatus, nextAlerts] = await Promise.all([backend.status(), backend.alerts()]);
       setStatus(nextStatus);
       setAlerts(nextAlerts);
       setLastSuccessAt(Date.now());
       setError("");
+
+      // Candles change only on a bar transition: re-download the series only when the active
+      // timeframe's latest closed bar (or its provisional flag) differs from what we have.
+      const card = nextStatus.watcher.timeframes[String(timeframe)];
+      const key = card ? `${card.bar_open}|${card.provisional ? "p" : "f"}` : "none";
+      if (candleKey.current[timeframe] !== key) {
+        try {
+          const series = await backend.candles(timeframe);
+          setCandlesByTf((previous) => ({ ...previous, [series.timeframe_minutes]: series }));
+          candleKey.current[timeframe] = key;
+          setChartError("");
+        } catch (candleError) {
+          setChartError(candleError instanceof Error ? candleError.message : String(candleError));
+        }
+      }
+
+      if (backend.kind === "supabase") {
+        try {
+          setSetTickers(await backend.setTickers());
+          setSetPanelError("");
+        } catch (setError) {
+          setSetPanelError(setError instanceof Error ? setError.message : String(setError));
+        }
+      }
     } catch (requestError) {
       if (!quiet) setError(requestError instanceof Error ? requestError.message : "Unable to connect");
+    } finally {
+      refreshing.current = false;
     }
-  }, [authed]);
+  }, [authed, timeframe]);
+
+  // The polling/Realtime effect below must not re-subscribe whenever refresh changes identity
+  // (it does on every timeframe switch), so it always calls the latest refresh through a ref.
+  const refreshRef = useRef(refresh);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => {
+    localStorage.setItem("aurum-timeframe", String(timeframe));
+    if (authed) void refreshRef.current(true);
+  }, [timeframe, authed]);
+
+  const selectedSetBar = useMemo(
+    () => setTickers.find((row) => row.symbol === selectedSet)?.last_bar_time ?? "",
+    [setTickers, selectedSet]
+  );
+
+  useEffect(() => {
+    if (!authed || !selectedSet) return;
+    let cancelled = false;
+    backend
+      .setHistory(selectedSet)
+      .then((points) => { if (!cancelled) setSetHistory(points); })
+      .catch((historyError) => { if (!cancelled) setSetPanelError(historyError instanceof Error ? historyError.message : String(historyError)); });
+    return () => { cancelled = true; };
+  }, [authed, selectedSet, selectedSetBar]);
+
+  useEffect(() => {
+    if (!selectedSet && setTickers.length) setSelectedSet(setTickers[0].symbol);
+  }, [setTickers, selectedSet]);
 
   useEffect(() => {
     backend.hasSession().then(setAuthed).catch(() => setAuthed(false));
@@ -146,15 +214,24 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
-    refresh();
+    void refreshRef.current();
     // Realtime (cloud) or polling (legacy). The poll stays on as a fallback in both modes.
-    const timer = window.setInterval(() => refresh(true), backend.onChange ? 30_000 : 4000);
-    const unsubscribe = backend.onChange ? backend.onChange(() => refresh(true)) : undefined;
+    const timer = window.setInterval(() => void refreshRef.current(true), backend.onChange ? 30_000 : 4000);
+    // Realtime emits one event per changed row (a watcher restart publishes hundreds of candles
+    // at once), so events are coalesced into a single refresh per second.
+    let debounce: number | undefined;
+    const unsubscribe = backend.onChange
+      ? backend.onChange(() => {
+          window.clearTimeout(debounce);
+          debounce = window.setTimeout(() => void refreshRef.current(true), 1000);
+        })
+      : undefined;
     return () => {
       window.clearInterval(timer);
+      window.clearTimeout(debounce);
       unsubscribe?.();
     };
-  }, [refresh, authed]);
+  }, [authed]);
 
   useEffect(() => {
     if (!authed || !config || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
@@ -437,6 +514,77 @@ export default function App() {
               <div className="empty panel">Waiting for the first MT5 candle snapshot…</div>
             )}
           </section>
+
+          <div className="section-title">
+            <div><span className="eyebrow">Chart</span><h2>{status?.watcher.symbol || config?.symbol || "XAUUSDm"} · MACD 12 / 26 / 9</h2></div>
+            <div className="tabs" role="tablist" aria-label="Timeframe">
+              {(config?.timeframes?.length ? config.timeframes : [10, 15]).map((tf) => (
+                <button key={tf} role="tab" aria-selected={tf === timeframe} className={tf === timeframe ? "active" : ""} onClick={() => setTimeframe(tf)}>
+                  M{tf}
+                </button>
+              ))}
+            </div>
+          </div>
+          <section className="panel chart-panel">
+            {chartError && <div className="message error"><span>Chart data: {chartError}</span></div>}
+            {candlesByTf[timeframe]?.candles.length ? (
+              <CandleChart
+                key={timeframe}
+                candles={candlesByTf[timeframe].candles}
+                alerts={alerts}
+                symbol={candlesByTf[timeframe].symbol}
+                timeframe={timeframe}
+              />
+            ) : !chartError ? (
+              <div className="empty-state">
+                <span className="empty-ring" />
+                <strong>No candles yet for M{timeframe}</strong>
+                <p>{backend.kind === "supabase" ? "The laptop watcher publishes candles once it runs in cloud mode." : "Candles appear after the first evaluated bar."}</p>
+              </div>
+            ) : null}
+          </section>
+
+          {backend.kind === "supabase" && (
+            <>
+              <div className="section-title">
+                <div><span className="eyebrow">SET stocks · 15m · TradingView (15-min delayed)</span><h2>MACD by ticker</h2></div>
+              </div>
+              <section className="panel">
+                {setPanelError && <div className="message error"><span>SET data: {setPanelError}</span></div>}
+                <table className="set-table">
+                  <thead>
+                    <tr><th>Ticker</th><th>MACD</th><th>Signal</th><th>Hist</th><th>Last closed bar</th><th>Feed</th></tr>
+                  </thead>
+                  <tbody>
+                    {setTickers.length === 0 ? (
+                      <tr><td className="empty-cell" colSpan={6}>{setPanelError ? "Could not load SET data." : "The SET scanner has not stored any values yet. Enable it in Supabase settings (set_scan_enabled) after the dry run."}</td></tr>
+                    ) : setTickers.map((row) => (
+                      <tr
+                        key={row.symbol}
+                        className={`selectable${row.symbol === selectedSet ? " selected" : ""}`}
+                        onClick={() => setSelectedSet(row.symbol)}
+                      >
+                        <td>{row.symbol.replace(/^SET:/, "")}</td>
+                        <td>{row.macd?.toFixed(4) ?? "—"}</td>
+                        <td>{row.signal?.toFixed(4) ?? "—"}</td>
+                        <td className={(row.histogram ?? 0) >= 0 ? "mint" : "coral"}>{row.histogram?.toFixed(4) ?? "—"}</td>
+                        <td>{formatTime(row.last_bar_time, false)}</td>
+                        <td>{row.last_error ? "error" : row.update_mode === "delayed_streaming_900" ? "delayed 15m" : row.update_mode || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {selectedSet && setHistory.length > 1 && (
+                  <div className="chart-panel">
+                    <div className="chart-legend">
+                      <span>{selectedSet.replace(/^SET:/, "")} · MACD history · {setHistory.length} bars · times in Bangkok</span>
+                    </div>
+                    <MacdChart points={setHistory} />
+                  </div>
+                )}
+              </section>
+            </>
+          )}
 
           <section className="diagnostics panel">
             <div>

@@ -1,5 +1,5 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
-import { AlertRecord, PublicConfig, StatusResponse, api } from "./api";
+import { AlertRecord, CandleSeries, PublicConfig, SetMacdPoint, SetTickerState, StatusResponse, api } from "./api";
 
 export type BackendKind = "legacy" | "supabase";
 
@@ -32,6 +32,12 @@ export interface Backend {
   subscribe(subscription: PushSubscriptionJSON): Promise<void>;
   unsubscribe(endpoint: string): Promise<void>;
   testPush(): Promise<TestPushResult>;
+  /** Recent closed gold candles with MACD for one timeframe (oldest first). */
+  candles(timeframe: number, limit?: number): Promise<CandleSeries>;
+  /** SET tickers: latest scanner state; empty on the legacy backend. */
+  setTickers(): Promise<SetTickerState[]>;
+  /** SET tickers: MACD history points for one ticker; empty on the legacy backend. */
+  setHistory(symbol: string, limit?: number): Promise<SetMacdPoint[]>;
   /** Optional live updates; returns an unsubscribe function. */
   onChange?(callback: () => void): () => void;
 }
@@ -81,6 +87,18 @@ class LegacyBackend implements Backend {
 
   testPush(): Promise<TestPushResult> {
     return api.testPush(this.token());
+  }
+
+  candles(timeframe: number, limit = 200): Promise<CandleSeries> {
+    return api.candles(this.token(), timeframe, limit);
+  }
+
+  async setTickers(): Promise<SetTickerState[]> {
+    return [];
+  }
+
+  async setHistory(): Promise<SetMacdPoint[]> {
+    return [];
   }
 }
 
@@ -135,9 +153,15 @@ function percentile(values: number[], fraction: number): number | null {
 class SupabaseBackend implements Backend {
   readonly kind = "supabase" as const;
   private readonly client: SupabaseClient;
+  private symbolCache: string | null = null;
 
   constructor(url: string, publishableKey: string) {
     this.client = createClient(url, publishableKey, { auth: { persistSession: true, autoRefreshToken: true } });
+  }
+
+  private async symbol(): Promise<string> {
+    if (!this.symbolCache) this.symbolCache = (await this.publicConfig()).symbol;
+    return this.symbolCache;
   }
 
   async hasSession(): Promise<boolean> {
@@ -287,11 +311,83 @@ class SupabaseBackend implements Backend {
     return { subscriptions: result.subscriptions ?? 0, accepted: result.accepted ?? 0, failed: result.failed ?? 0 };
   }
 
+  async candles(timeframe: number, limit = 200): Promise<CandleSeries> {
+    const symbol = await this.symbol();
+    const { data, error } = await this.client
+      .from("candles")
+      .select("bar_time,open,high,low,close,macd,signal,histogram,provisional")
+      .eq("symbol", symbol)
+      .eq("timeframe", timeframe)
+      .order("bar_time", { ascending: false })
+      .limit(limit);
+    if (error) throw new Error(error.message);
+    type Row = { bar_time: string; open: number | null; high: number | null; low: number | null; close: number; macd: number | null; signal: number | null; histogram: number | null; provisional: boolean };
+    const rows = ((data as Row[]) || []).reverse();
+    return {
+      symbol,
+      timeframe_minutes: timeframe,
+      candles: rows.map((row) => ({
+        time: row.bar_time,
+        open: Number(row.open ?? row.close),
+        high: Number(row.high ?? row.close),
+        low: Number(row.low ?? row.close),
+        close: Number(row.close),
+        macd: row.macd,
+        signal: row.signal,
+        histogram: row.histogram,
+        provisional: row.provisional
+      }))
+    };
+  }
+
+  async setTickers(): Promise<SetTickerState[]> {
+    const { data, error } = await this.client
+      .from("set_state")
+      .select("symbol,timeframe,last_bar_time,last_macd,last_signal,last_hist,update_mode,last_polled_at,last_error")
+      .order("symbol")
+      .order("timeframe");
+    if (error) throw new Error(error.message);
+    type Row = { symbol: string; timeframe: number; last_bar_time: number | null; last_macd: number | null; last_signal: number | null; last_hist: number | null; update_mode: string | null; last_polled_at: string | null; last_error: string | null };
+    return ((data as Row[]) || []).map((row) => ({
+      symbol: row.symbol,
+      timeframe_minutes: row.timeframe,
+      last_bar_time: row.last_bar_time ? new Date(Number(row.last_bar_time) * 1000).toISOString() : null,
+      macd: row.last_macd,
+      signal: row.last_signal,
+      histogram: row.last_hist,
+      update_mode: row.update_mode,
+      last_polled_at: row.last_polled_at,
+      last_error: row.last_error
+    }));
+  }
+
+  async setHistory(symbol: string, limit = 200): Promise<SetMacdPoint[]> {
+    const { data, error } = await this.client
+      .from("set_macd_history")
+      .select("bar_time,close,macd,signal,histogram")
+      .eq("symbol", symbol)
+      .order("bar_time", { ascending: false })
+      .limit(limit);
+    if (error) throw new Error(error.message);
+    type Row = { bar_time: string; close: number | null; macd: number; signal: number; histogram: number };
+    return ((data as Row[]) || []).reverse().map((row) => ({
+      symbol,
+      time: row.bar_time,
+      close: row.close,
+      macd: row.macd,
+      signal: row.signal,
+      histogram: row.histogram
+    }));
+  }
+
   onChange(callback: () => void): () => void {
+    // A unique topic per subscription: channel(topic) returns an existing channel with the same
+    // name, so a resubscribe racing a still-leaving channel would otherwise silently die.
     const channel: RealtimeChannel = this.client
-      .channel("aurum-live")
+      .channel(`aurum-live-${Math.random().toString(36).slice(2, 10)}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "alerts" }, callback)
       .on("postgres_changes", { event: "*", schema: "public", table: "heartbeats" }, callback)
+      .on("postgres_changes", { event: "*", schema: "public", table: "candles" }, callback)
       .subscribe();
     return () => {
       void this.client.removeChannel(channel);

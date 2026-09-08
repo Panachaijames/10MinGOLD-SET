@@ -174,6 +174,18 @@ def alerts(limit: int = 50) -> dict[str, Any]:
     return {"alerts": database.list_alerts(max(1, min(limit, 200)))}
 
 
+@app.get("/api/candles", dependencies=[Depends(require_token)])
+def candles(timeframe: int = 10, limit: int = 200) -> dict[str, Any]:
+    if timeframe not in settings.timeframes:
+        raise HTTPException(status_code=404, detail=f"Unknown timeframe M{timeframe}")
+    rows = watcher.candles(timeframe)
+    return {
+        "symbol": settings.mt5_symbol,
+        "timeframe_minutes": timeframe,
+        "candles": rows[-max(1, min(limit, 500)):],
+    }
+
+
 @app.post("/api/push/subscriptions", dependencies=[Depends(require_token)])
 def subscribe(body: SubscriptionBody, request: Request) -> dict[str, Any]:
     validate_subscription(body)

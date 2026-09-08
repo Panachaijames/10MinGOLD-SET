@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
 import sys
 import threading
 import time
@@ -27,6 +28,17 @@ ES_SYSTEM_REQUIRED = 0x00000001
 # within this many seconds of the bar's open; later sightings (resume from sleep, quiet
 # market) say nothing about the clock.
 SKEW_SAMPLE_MAX_AGE_SECONDS = 60.0
+
+# Closed candles (with MACD values) kept per timeframe for the chart and published to the cloud.
+CANDLE_HISTORY = 200
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN -> None
 
 
 class RetryPoll(Exception):
@@ -72,6 +84,13 @@ class Watcher:
         self._skew_upper_seconds: float | None = None
         self._last_cycle_at: datetime | None = None
         self._last_heartbeat_at: float = 0.0
+        self._candles: dict[int, list[dict[str, Any]]] = {}
+        self._candles_published_until: dict[int, str] = {}
+        self._candles_published_key: dict[int, str] = {}
+        # Cloud uploads (candles, heartbeats) never run on the watcher thread: they are queued
+        # here and sent by the outbox thread, so a slow network cannot delay alert detection.
+        self._cloud_jobs: "queue.Queue[tuple[str, tuple[Any, ...]]]" = queue.Queue()
+        self._heartbeat_queued = False
         self._snapshot: dict[str, Any] = {
             "running": False,
             "connected": False,
@@ -127,6 +146,61 @@ class Watcher:
         with self._lock:
             self._snapshot.update(values)
 
+    def candles(self, timeframe: int) -> list[dict[str, Any]]:
+        """Recent closed candles with MACD for one timeframe (oldest first)."""
+        with self._lock:
+            return [dict(row) for row in self._candles.get(timeframe, [])]
+
+    # ------------------------------------------------------------------ chart data
+
+    def _capture_candles(self, timeframe: int, calculated: pd.DataFrame, provisional_last: bool) -> None:
+        tail = calculated.iloc[-CANDLE_HISTORY:]
+        rows: list[dict[str, Any]] = []
+        last_index = len(tail) - 1
+        for position, (_, row) in enumerate(tail.iterrows()):
+            close = _finite(row.get("close"))
+            if close is None:
+                continue
+            rows.append({
+                "time": iso_utc(pd.Timestamp(row["time"]).to_pydatetime()),
+                "open": _finite(row.get("open", close)) if "open" in row else close,
+                "high": _finite(row.get("high", close)) if "high" in row else close,
+                "low": _finite(row.get("low", close)) if "low" in row else close,
+                "close": close,
+                "macd": _finite(row.get("macd")),
+                "signal": _finite(row.get("signal")),
+                "histogram": _finite(row.get("histogram")),
+                "provisional": provisional_last and position == last_index,
+            })
+        with self._lock:
+            self._candles[timeframe] = rows
+
+    def _mark_observed(self, timeframe: int, observation_key: str) -> None:
+        """Record that this bar state was fully processed; queue the candle upload once per state.
+
+        Called only after the local work (state, alert insert) succeeded, so a local failure
+        never produces a network call, and the same bar state is never re-sent every cycle.
+        """
+        self._observed_current_bar[timeframe] = observation_key
+        if getattr(self.push, "publish_candles", None) is None:
+            return
+        if self._candles_published_key.get(timeframe) == observation_key:
+            return
+        rows = self.candles(timeframe)
+        if not rows:
+            return
+        self._candles_published_key[timeframe] = observation_key
+        since = self._candles_published_until.get(timeframe)
+        if since is None:
+            to_send = rows
+        else:
+            # New bars plus the two before them: a provisional (by-clock) candle may have been revised.
+            newer = [row for row in rows if row["time"] > since]
+            to_send = rows[-2:] if not newer else rows[max(0, len(rows) - len(newer) - 2):]
+        self._candles_published_until[timeframe] = rows[-1]["time"]
+        self._cloud_jobs.put(("candles", (self.settings.mt5_symbol, timeframe, to_send)))
+        self._delivery_wakeup.set()
+
     # ------------------------------------------------------------------ watcher thread
 
     def _run(self) -> None:
@@ -175,18 +249,34 @@ class Watcher:
 
     def _maybe_heartbeat(self, connected: bool) -> None:
         """In cloud mode the sink also carries a heartbeat so the watchdog can tell silence from calm."""
-        heartbeat = getattr(self.push, "heartbeat", None)
-        if heartbeat is None:
+        if getattr(self.push, "heartbeat", None) is None:
             return
         now = time.monotonic()
-        if now - self._last_heartbeat_at < self.settings.heartbeat_interval_seconds:
+        if now - self._last_heartbeat_at < self.settings.heartbeat_interval_seconds or self._heartbeat_queued:
             return
         self._last_heartbeat_at = now
-        try:
-            heartbeat(connected, self.snapshot())
-        except Exception as exc:  # the heartbeat must never take the watcher down
-            logger.warning("Heartbeat upload failed: %s: %s", type(exc).__name__, exc)
-            self._update(last_push_error=f"heartbeat: {type(exc).__name__}: {exc}")
+        self._heartbeat_queued = True
+        self._cloud_jobs.put(("heartbeat", (connected, self.snapshot())))
+        self._delivery_wakeup.set()
+
+    def _drain_cloud_jobs(self) -> None:
+        """Run queued cloud uploads on the outbox thread. Failures are logged, never raised."""
+        while True:
+            try:
+                kind, args = self._cloud_jobs.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                if kind == "heartbeat":
+                    self._heartbeat_queued = False
+                    self.push.heartbeat(*args)  # type: ignore[attr-defined]
+                elif kind == "candles":
+                    self.push.publish_candles(*args)  # type: ignore[attr-defined]
+            except Exception as exc:
+                if kind == "heartbeat":
+                    self._heartbeat_queued = False
+                logger.warning("Cloud upload (%s) failed: %s: %s", kind, type(exc).__name__, exc)
+                self._update(last_push_error=f"{kind}: {type(exc).__name__}: {exc}")
 
     def _note_cycle_gap(self, now: datetime) -> None:
         """Detect that this process was frozen (sleep, hang) or restarted late."""
@@ -234,6 +324,7 @@ class Watcher:
     def _delivery_run(self) -> None:
         while not self._stop.is_set():
             try:
+                self._drain_cloud_jobs()
                 due = self.database.due_outbox_alerts()
                 if not due:
                     self._delivery_wakeup.wait(1.0)
@@ -314,6 +405,7 @@ class Watcher:
         calculated = calculate_macd(closed, timeframe)
         latest_index = len(calculated) - 1
         latest = point_from_row(calculated.iloc[latest_index])
+        self._capture_candles(timeframe, calculated, provisional_last=close_by_clock)
         detected_at = utc_now()
         detection_delay_ms = max(0, round((detected_at - latest.bar_close).total_seconds() * 1000))
         current_bar_age_seconds = max(
@@ -343,14 +435,14 @@ class Watcher:
 
         if last_value is None:
             self.database.set_state(state_key, latest_open_iso)
-            self._observed_current_bar[timeframe] = observation_key
+            self._mark_observed(timeframe, observation_key)
             logger.info("Seeded %s M%s at %s; no stale alert sent", self.settings.mt5_symbol, timeframe, latest_open_iso)
             return []
 
         last_open = pd.Timestamp(last_value)
         unseen = calculated.index[calculated["time"] > last_open].tolist()
         if not unseen:
-            self._observed_current_bar[timeframe] = observation_key
+            self._mark_observed(timeframe, observation_key)
             return []
 
         pending_pushes: list[dict[str, Any]] = []
@@ -398,5 +490,5 @@ class Watcher:
         if skipped_stale:
             with self._lock:
                 self._snapshot["stale_crosses_skipped"] += skipped_stale
-        self._observed_current_bar[timeframe] = observation_key
+        self._mark_observed(timeframe, observation_key)
         return pending_pushes

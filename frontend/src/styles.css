@@ -161,3 +161,21 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 /* v2: multi-field sign-in and the alert linked from a notification */
 .onboarding form { display: grid; gap: 10px; }
 .alert-row.highlighted { outline: 1px solid var(--mint); outline-offset: 2px; border-radius: 12px; }
+
+/* v2: charts */
+.tabs { display: inline-flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; }
+.tabs button { background: transparent; border: 0; color: var(--muted); font: 500 .74rem "DM Mono", monospace; padding: 7px 12px; border-radius: 9px; cursor: pointer; }
+.tabs button.active { color: var(--mint); background: rgba(113,225,193,.1); }
+.chart-panel { padding: 14px 14px 8px; }
+.chart-wrap { position: relative; width: 100%; }
+.chart-surface { width: 100%; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 4px 6px 10px; color: var(--muted); font: .68rem "DM Mono", monospace; }
+.chart-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.chart-legend-note { margin-left: auto; opacity: .8; }
+.set-table { width: 100%; border-collapse: collapse; font: .74rem "DM Mono", monospace; }
+.set-table th, .set-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.set-table th { color: var(--muted); font-weight: 500; font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; }
+.set-table tr.selectable { cursor: pointer; }
+.set-table tr.selected td { background: rgba(113,225,193,.06); }
+.set-table .empty-cell { color: var(--muted); padding: 18px 12px; }
+@media (max-width: 720px) { .chart-legend-note { margin-left: 0; width: 100%; } .set-table th:nth-child(5), .set-table td:nth-child(5) { display: none; } }

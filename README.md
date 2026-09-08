@@ -163,11 +163,23 @@ DAOL SEC does not currently expose SET equity market data through Settrade Open 
 
 References: [Tailscale Personal pricing](https://tailscale.com/pricing), [Exness VPS](https://www.exness.com/vps/), [AWS Lightsail Windows bundles](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-bundles.html), [MQL5 VPS pricing](https://www.mql5.com/en/vps), [TradingView plans](https://www.tradingview.com/pricing/), and [TradingView SET data fees](https://www.tradingview.com/data-coverage/).
 
+## Chart
+
+The PWA draws the last 200 closed candles of the selected timeframe (M10 / M15 tabs) with a MACD pane
+(histogram, MACD, signal) and marks every confirmed cross with an arrow. Data comes from the watcher:
+`/api/candles?timeframe=10` locally, or the `candles` table in Supabase (published by the watcher in
+cloud mode, live via Realtime). SET tickers get a MACD-only history chart from `set_macd_history`,
+because the free TradingView scanner exposes indicator values but no OHLC history. Axis times are shown
+in Bangkok time.
+
 ## Version 2: Vercel + Supabase (cloud fan-out)
 
 Everything that must be always-on moves to Supabase; the laptop only reads Exness candles and
 uploads alerts. The code for all of it is in this repo (`supabase/`, `frontend/src/backend.ts`,
 `backend/supabase_repo.py`); the steps below need your Supabase and Vercel accounts.
+
+See [`docs/DATABASE_SYNC.md`](docs/DATABASE_SYNC.md) for the table-by-table ownership, retention,
+deduplication and synchronization contract.
 
 1. **Supabase project** (region `ap-southeast-1`, current Postgres). In the dashboard copy the
    `sb_publishable_…` and `sb_secret_…` keys (Settings > API keys). Then from this folder:
@@ -210,6 +222,10 @@ uploads alerts. The code for all of it is in this repo (`supabase/`, `frontend/s
    and the `push-fanout` function delivers them; `heartbeats.gold_mt5` refreshes every 15 s and the
    SQL watchdog raises a system alert if it stops during gold hours. Never run `local` and `cloud`
    against the same devices at once (duplicate notifications).
+
+   Before enrolling any cloud push device, copy existing local history once with
+   `python scripts/sync_history.py` (preview) and `python scripts/sync_history.py --apply`. The
+   command refuses to run when an enabled cloud subscription could receive old alerts.
 
 6. **SET stocks.** Edit `settings.set_tickers`, leave `set_scan_dry_run = true` for two sessions and
    read `heartbeats.set_tv.details` / `set_state` to confirm `update_mode`, the 900 s lag and bar

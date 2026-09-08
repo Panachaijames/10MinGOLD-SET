@@ -241,3 +241,61 @@ class WatcherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordingPush(FakePush):
+    def __init__(self) -> None:
+        self.published: list[tuple[str, int, int]] = []
+
+    def publish_candles(self, symbol: str, timeframe: int, rows: list[dict]) -> None:
+        self.published.append((symbol, timeframe, len(rows)))
+
+
+class CandleCaptureTests(unittest.TestCase):
+    def test_closed_candles_are_captured_and_published_incrementally(self) -> None:
+        boundary = pd.Timestamp.now(tz="UTC").floor("10min")
+        source = FakeSource(_flat_then(120.0, boundary))
+        push = RecordingPush()
+        with tempfile.TemporaryDirectory() as directory:
+            watcher = Watcher(_settings(directory), Database(Path(directory) / "watcher.sqlite3"), source, push)  # type: ignore[arg-type]
+            watcher._poll_timeframe(10)
+            candles = watcher.candles(10)
+            self.assertEqual(len(candles), 119)  # forming candle excluded
+            self.assertEqual(candles[-1]["close"], 100.0)
+            self.assertIsNotNone(candles[-1]["macd"])
+            self.assertFalse(candles[-1]["provisional"])
+            self.assertEqual(candles[-1]["open"], candles[-1]["close"])  # no OHLC in the fake feed
+            # Uploads are queued for the outbox thread, never done on the watcher thread.
+            self.assertEqual(push.published, [])
+            watcher._drain_cloud_jobs()
+            self.assertEqual(push.published, [("XAUUSDm", 10, 119)])  # first publish = full history
+
+            # Re-polling the same bar state queues nothing new.
+            watcher._poll_timeframe(10)
+            watcher._drain_cloud_jobs()
+            self.assertEqual(len(push.published), 1)
+
+            source.frame = pd.concat(
+                [source.frame, pd.DataFrame({"time": [boundary], "close": [141.0]})], ignore_index=True
+            )
+            watcher._poll_timeframe(10)
+            watcher._drain_cloud_jobs()
+            self.assertEqual(len(watcher.candles(10)), 120)
+            self.assertEqual(push.published[-1], ("XAUUSDm", 10, 3))  # new bar + the two before it
+
+    def test_candle_publish_failure_does_not_break_polling(self) -> None:
+        class FailingPush(RecordingPush):
+            def publish_candles(self, symbol: str, timeframe: int, rows: list[dict]) -> None:
+                raise RuntimeError("cloud down")
+
+        boundary = pd.Timestamp.now(tz="UTC").floor("10min")
+        with tempfile.TemporaryDirectory() as directory:
+            watcher = Watcher(
+                _settings(directory), Database(Path(directory) / "watcher.sqlite3"),
+                FakeSource(_flat_then(120.0, boundary)), FailingPush(),  # type: ignore[arg-type]
+            )
+            self.assertEqual(watcher._poll_timeframe(10), [])
+            self.assertEqual(len(watcher.candles(10)), 119)
+            self.assertIsNone(watcher.snapshot()["last_push_error"])  # the watcher thread never uploads
+            watcher._drain_cloud_jobs()
+            self.assertIn("candles: RuntimeError", watcher.snapshot()["last_push_error"])

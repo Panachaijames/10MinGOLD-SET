@@ -74,6 +74,46 @@ export interface AlertRecord {
   first_device_received_at: string | null;
 }
 
+export interface Candle {
+  time: string;          // candle OPEN, ISO-8601 UTC
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  macd: number | null;
+  signal: number | null;
+  histogram: number | null;
+  provisional?: boolean;
+}
+
+export interface CandleSeries {
+  symbol: string;
+  timeframe_minutes: number;
+  candles: Candle[];
+}
+
+/** One MACD point per closed 15m bar for a SET ticker (no OHLC available from the free scanner). */
+export interface SetMacdPoint {
+  symbol: string;
+  time: string;
+  close: number | null;
+  macd: number;
+  signal: number;
+  histogram: number;
+}
+
+export interface SetTickerState {
+  symbol: string;
+  timeframe_minutes: number;
+  last_bar_time: string | null;
+  macd: number | null;
+  signal: number | null;
+  histogram: number | null;
+  update_mode: string | null;
+  last_polled_at: string | null;
+  last_error: string | null;
+}
+
 export interface PublicConfig {
   vapid_public_key: string;
   symbol: string;
@@ -103,6 +143,8 @@ export const api = {
   publicConfig: () => request<PublicConfig>("/api/public-config"),
   status: (token: string) => request<StatusResponse>("/api/status", token),
   alerts: (token: string) => request<{ alerts: AlertRecord[] }>("/api/alerts?limit=50", token),
+  candles: (token: string, timeframe: number, limit = 200) =>
+    request<CandleSeries>(`/api/candles?timeframe=${timeframe}&limit=${limit}`, token),
   subscribe: (token: string, subscription: PushSubscriptionJSON) =>
     request<{ ok: boolean; subscription_id: number }>("/api/push/subscriptions", token, {
       method: "POST",

@@ -163,7 +163,11 @@ Deno.serve(async (req) => {
     if (rows.length !== tickers.length) {
       summary.push({ warning: `scanner returned ${rows.length} rows for ${tickers.length} tickers` });
     }
-    const { data: states } = await client.from("set_state").select("*").in("symbol", tickers);
+    const { data: states } = await client
+      .from("set_state")
+      .select("*")
+      .in("symbol", tickers)
+      .eq("timeframe", TIMEFRAME);
     const stateBySymbol = new Map((states ?? []).map((s: { symbol: string }) => [s.symbol, s]));
 
     for (const row of rows) {
@@ -212,6 +216,22 @@ Deno.serve(async (req) => {
         }
       }
 
+      // One history point per closed bar feeds the PWA's SET MACD chart (the scanner has no OHLC history).
+      const { error: historyError } = await client.from("set_macd_history").upsert(
+        {
+          symbol,
+          timeframe: TIMEFRAME,
+          bar_time: new Date(bar.openEpoch * 1000).toISOString(),
+          close: bar.close,
+          macd: bar.macd,
+          signal: bar.signal,
+          histogram: bar.histogram,
+          update_mode: typeof row["update_mode|15"] === "string" ? (row["update_mode|15"] as string) : null,
+        },
+        { onConflict: "symbol,timeframe,bar_time", ignoreDuplicates: true },
+      );
+      if (historyError) entry.history_error = historyError.message;
+
       const { error: stateError } = await client.from("set_state").upsert(
         {
           symbol,
@@ -224,7 +244,7 @@ Deno.serve(async (req) => {
           last_polled_at: new Date().toISOString(),
           last_error: null,
         },
-        { onConflict: "symbol" },
+        { onConflict: "symbol,timeframe" },
       );
       if (stateError) entry.state_error = stateError.message;
       summary.push(entry);
@@ -241,7 +261,11 @@ Deno.serve(async (req) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await heartbeat(client, "set_tv", false, { error: message, tickers: tickers.length, duration_ms: Date.now() - startedAt });
-    await client.from("set_state").update({ last_error: message, last_polled_at: new Date().toISOString() }).in("symbol", tickers);
+    await client
+      .from("set_state")
+      .update({ last_error: message, last_polled_at: new Date().toISOString() })
+      .in("symbol", tickers)
+      .eq("timeframe", TIMEFRAME);
     return Response.json({ ok: false, error: message, summary }, { status: 502 });
   }
 });
