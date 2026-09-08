@@ -84,6 +84,32 @@ button:disabled { opacity: .5; cursor: wait; transform: none; }
 .bell { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; color: var(--gold); background: rgba(214,173,92,.08); }
 .bell svg { width: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .button-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.onboarding-share { width: 100%; margin-top: 12px; }
+
+.share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  overflow-y: auto;
+  background: rgba(1, 10, 8, .78);
+  backdrop-filter: blur(8px);
+}
+.share-dialog { position: relative; width: min(470px, 100%); padding: clamp(23px, 5vw, 34px); text-align: center; }
+.share-dialog h2 { margin: 7px 30px 8px; font-size: 1.55rem; letter-spacing: -.035em; }
+.share-dialog > p { color: var(--muted); line-height: 1.5; font-size: .78rem; }
+.share-close { position: absolute; top: 12px; right: 12px; color: var(--muted); background: transparent; font-size: 1.35rem; line-height: 1; }
+.qr-frame { width: 248px; min-height: 248px; margin: 20px auto 14px; padding: 12px; display: grid; place-items: center; color: #40544e; background: #fff; border-radius: 16px; }
+.qr-frame img { display: block; width: 224px; height: 224px; image-rendering: pixelated; }
+.share-url { display: block; overflow-wrap: anywhere; padding: 0 8px; color: var(--mint); }
+.share-dialog .share-warning { color: #ffd69b; background: rgba(214,173,92,.09); border: 1px solid rgba(214,173,92,.18); border-radius: 10px; padding: 10px 12px; }
+.share-actions { display: flex; justify-content: center; gap: 8px; margin: 18px 0; }
+.install-steps { margin: 0; padding: 15px 0 0 20px; border-top: 1px solid var(--line); color: var(--muted); text-align: left; font-size: .72rem; line-height: 1.55; }
+.install-steps li + li { margin-top: 5px; }
+.install-steps strong { color: var(--ink); }
+.share-feedback { margin-top: 13px; color: var(--mint); font-size: .72rem; }
 
 .section-title { display: flex; justify-content: space-between; align-items: flex-end; margin: 45px 1px 14px; }
 .section-title h2, .diagnostics h2 { font-size: 1.42rem; letter-spacing: -.03em; margin: 3px 0 0; }
@@ -139,6 +165,7 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
   .action-strip { align-items: flex-start; flex-direction: column; }
   .button-row { width: 100%; justify-content: stretch; }
   .button-row button { flex: 1; }
+  .share-dialog { margin: auto; }
   .card-grid { grid-template-columns: 1fr; }
   .diagnostics { grid-template-columns: 1fr; }
   .diagnostic-metrics { margin-top: 9px; justify-content: space-between; }

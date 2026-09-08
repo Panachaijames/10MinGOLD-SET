@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { AlertRecord, CandleSeries, PublicConfig, SetMacdPoint, SetTickerState, StatusResponse, TimeframeState } from "./api";
 import { createBackend } from "./backend";
 import { CandleChart, MacdChart } from "./charts";
@@ -83,6 +84,87 @@ function BellIcon() {
   );
 }
 
+interface ShareAppDialogProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+function ShareAppDialog({ open, onClose }: ShareAppDialogProps) {
+  // Share only the public app origin. Never put an auth token, alert id, or current query string
+  // into a QR code that may be photographed or forwarded.
+  const appUrl = useMemo(() => new URL("/", window.location.origin).href, []);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const localOnly = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+  const nativeShare = (navigator as unknown as { share?: (data: ShareData) => Promise<void> }).share;
+  const canShare = typeof nativeShare === "function";
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(appUrl, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 224,
+      color: { dark: "#061310ff", light: "#ffffffff" }
+    })
+      .then((value) => { if (!cancelled) setQrDataUrl(value); })
+      .catch(() => { if (!cancelled) setFeedback("Could not generate the QR code."); });
+    return () => { cancelled = true; };
+  }, [appUrl]);
+
+  useEffect(() => {
+    if (!open) return;
+    setFeedback("");
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open, onClose]);
+
+  const shareOrCopy = async () => {
+    try {
+      if (nativeShare) {
+        await nativeShare.call(navigator, { title: "Aurum Signal", text: "Open the Aurum Signal web app", url: appUrl });
+        setFeedback("App link shared.");
+      } else {
+        await navigator.clipboard.writeText(appUrl);
+        setFeedback("App link copied.");
+      }
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      setFeedback("Could not share automatically. Copy the URL shown below.");
+    }
+  };
+
+  if (!open) return null;
+  return (
+    <div className="share-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section id="share-app-dialog" className="share-dialog panel" role="dialog" aria-modal="true" aria-labelledby="share-app-title">
+        <button className="share-close" type="button" onClick={onClose} aria-label="Close QR code" autoFocus>×</button>
+        <span className="eyebrow">Open on another device</span>
+        <h2 id="share-app-title">Scan to open Aurum Signal</h2>
+        <p>The QR opens this web app. Then install it from your phone browser to give it its own Home Screen icon.</p>
+        <div className="qr-frame">
+          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt={`QR code for ${appUrl}`} /> : <span>Generating QR…</span>}
+        </div>
+        <code className="share-url">{appUrl}</code>
+        {localOnly && <p className="share-warning">This preview points to this computer only. Deploy to Vercel first; the QR will automatically use the final Vercel address.</p>}
+        <div className="share-actions">
+          <button className="primary" type="button" onClick={shareOrCopy}>{canShare ? "Share link" : "Copy link"}</button>
+          <button className="ghost" type="button" onClick={onClose}>Done</button>
+        </div>
+        <ol className="install-steps">
+          <li><strong>Android:</strong> open in Chrome, then tap Install app or Add to Home screen.</li>
+          <li><strong>iPhone/iPad:</strong> open in Safari, tap Share, then Add to Home Screen.</li>
+          <li>Open the installed icon, sign in, and tap Enable notifications.</li>
+        </ol>
+        {feedback && <div className="share-feedback" role="status">{feedback}</div>}
+      </section>
+    </div>
+  );
+}
+
 function alertHeadline(alert: AlertRecord): string {
   if (alert.direction === "info") return alert.title || "System notice";
   const symbol = alert.source && alert.source !== "gold_mt5" ? `${alert.symbol.replace(/^SET:/, "")} · ` : "";
@@ -105,6 +187,7 @@ export default function App() {
   const [clock, setClock] = useState(Date.now());
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [standalone, setStandalone] = useState(window.matchMedia("(display-mode: standalone)").matches);
+  const [shareOpen, setShareOpen] = useState(false);
   const [timeframe, setTimeframe] = useState<number>(() => Number(localStorage.getItem("aurum-timeframe")) || 10);
   const [candlesByTf, setCandlesByTf] = useState<Record<number, CandleSeries>>({});
   const [chartError, setChartError] = useState("");
@@ -438,6 +521,16 @@ export default function App() {
             </>
           )}
           {error && <div className="message error"><span>{error}</span></div>}
+          <button
+            className="ghost onboarding-share"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="share-app-dialog"
+            aria-expanded={shareOpen}
+            onClick={() => setShareOpen(true)}
+          >
+            Open on phone (QR)
+          </button>
         </section>
       )}
 
@@ -472,6 +565,16 @@ export default function App() {
               </div>
             </div>
             <div className="button-row">
+              <button
+                className="ghost"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="share-app-dialog"
+                aria-expanded={shareOpen}
+                onClick={() => setShareOpen(true)}
+              >
+                Phone QR
+              </button>
               {!standalone && <button className="ghost" onClick={install}>Install app</button>}
               {pushEnabled ? (
                 <>
@@ -636,6 +739,7 @@ export default function App() {
           </footer>
         </>
       )}
+      <ShareAppDialog open={shareOpen} onClose={() => setShareOpen(false)} />
     </main>
   );
 }

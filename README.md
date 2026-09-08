@@ -48,7 +48,7 @@ The full candle history is only fetched when MT5 exposes a new candle. Between b
 Prerequisites:
 
 1. MetaTrader 5 is installed, open, signed in to Exness, and `XAUUSDm` is visible in Market Watch.
-2. Python 3.11 and Node.js 20 are installed.
+2. Python 3.11 and Node.js 22 are installed.
 
 From PowerShell in this folder:
 
@@ -215,7 +215,9 @@ deduplication and synchronization contract.
    `frontend/vercel.json`), environment variables `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`,
    `VAPID_PUBLIC_KEY` (base64url of the VAPID public key). Decide the final domain **before** enrolling
    any device: push subscriptions, the service worker scope and the iOS Home Screen app are per origin.
-   Enroll each device on the production URL and use **Send test**.
+   On a desktop, open **Phone QR** and scan it with each device; the QR always uses the current public
+   origin and contains no login or session data. Install from the opened page, enroll notifications,
+   and use **Send test**. A localhost QR is only a preview and cannot be opened by another device.
 
 5. **Laptop → cloud.** In `.env` set `PUSH_MODE=cloud`, `SUPABASE_URL=https://<ref>.supabase.co`,
    `SUPABASE_SECRET_KEY=sb_secret_...`, restart the scheduled task. Alerts now land in `public.alerts`
