@@ -444,6 +444,7 @@ class Watcher:
         # appears the row is evaluated again on final data and INSERT OR IGNORE keeps
         # any already-sent alert from repeating.
         closed = frame.copy() if close_by_clock else frame.iloc[:-1].copy()
+        assert isinstance(closed, pd.DataFrame)
         calculated = calculate_macd(closed, timeframe)
         latest_index = len(calculated) - 1
         latest = point_from_row(calculated.iloc[latest_index])
