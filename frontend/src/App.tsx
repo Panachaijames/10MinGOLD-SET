@@ -181,7 +181,7 @@ interface LineBotDialogProps {
 function LineBotDialog({ open, onClose, config, onSendTest, loading }: LineBotDialogProps) {
   const addUrl =
     config?.line_bot_add_url ||
-    (config?.line_bot_id ? `https://line.me/R/ti/p/@${config.line_bot_id.replace(/^@/, "")}` : "https://line.me/R/nv/recommendOA");
+    (config?.line_bot_id ? `https://line.me/R/ti/p/@${config.line_bot_id.replace(/^@/, "")}` : "https://lin.ee/tQIeBjo");
   const [qrDataUrl, setQrDataUrl] = useState("");
 
   useEffect(() => {

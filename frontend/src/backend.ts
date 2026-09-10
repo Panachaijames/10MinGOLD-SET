@@ -208,8 +208,8 @@ class SupabaseBackend implements Backend {
       timeframes: Object.keys(details.timeframes || {}).map(Number).filter(Boolean),
       poll_interval_ms: 500,
       line_configured: details.line_configured !== undefined ? Boolean(details.line_configured) : true,
-      line_bot_id: details.line_bot_id ?? null,
-      line_bot_add_url: details.line_bot_add_url ?? null
+      line_bot_id: details.line_bot_id || __LINE_BOT_ID__ || "@688fbhby",
+      line_bot_add_url: details.line_bot_add_url || __LINE_BOT_ADD_URL__ || "https://lin.ee/tQIeBjo"
     };
   }
 

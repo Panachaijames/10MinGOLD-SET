@@ -14,6 +14,8 @@ const define = {
   __SUPABASE_URL__: JSON.stringify(process.env.SUPABASE_URL || ""),
   __SUPABASE_PUBLISHABLE_KEY__: JSON.stringify(process.env.SUPABASE_PUBLISHABLE_KEY || ""),
   __VAPID_PUBLIC_KEY__: JSON.stringify(process.env.VAPID_PUBLIC_KEY || ""),
+  __LINE_BOT_ADD_URL__: JSON.stringify(process.env.LINE_BOT_ADD_URL || "https://lin.ee/tQIeBjo"),
+  __LINE_BOT_ID__: JSON.stringify(process.env.LINE_BOT_ID || "@688fbhby"),
   __APP_VERSION__: JSON.stringify(process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || new Date().toISOString().slice(0, 16))
 };
 
