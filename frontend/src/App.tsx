@@ -10,7 +10,12 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   const raw = window.atob(base64);
-  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)));
+  const buffer = new ArrayBuffer(raw.length);
+  const outputArray = new Uint8Array(buffer);
+  for (let i = 0; i < raw.length; ++i) {
+    outputArray[i] = raw.charCodeAt(i);
+  }
+  return outputArray;
 }
 
 function arrayBufferToUrlBase64(value: ArrayBuffer | null): string {
@@ -479,7 +484,7 @@ export default function App() {
       if (!subscription) {
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(config.vapid_public_key)
+          applicationServerKey: urlBase64ToUint8Array(config.vapid_public_key) as BufferSource
         });
       }
       await backend.subscribe(subscription.toJSON());

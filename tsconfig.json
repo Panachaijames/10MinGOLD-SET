@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"]
+  },
+  "include": [
+    "frontend/src/**/*"
+  ],
+  "exclude": [
+    "supabase/**/*",
+    "backend/**/*",
+    "scripts/**/*",
+    "node_modules",
+    "frontend/node_modules",
+    "frontend/dist"
+  ]
+}

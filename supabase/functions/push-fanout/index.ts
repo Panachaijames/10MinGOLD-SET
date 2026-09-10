@@ -1,3 +1,4 @@
+/// <reference path="../deno.d.ts" />
 // Web Push fan-out. Called by:
 //   - the alerts INSERT trigger (ops.alerts_notify -> pg_net, body {type:'INSERT', record})
 //   - pg_cron ops.push_sweep() with {mode:'sweep'} to retry pending deliveries
@@ -14,6 +15,14 @@ import { isSecretCaller, isUserCaller, unauthorized } from "../_shared/auth.ts";
 import { adminClient, corsHeaders, getSetting, heartbeat } from "../_shared/db.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
+// Ambient fallback for IDEs without the Deno extension active
+declare const Deno: {
+  env: {
+    get(key: string): string | undefined;
+    set(key: string, value: string): void;
+  };
+  serve(handler: (req: Request) => Response | Promise<Response>): void;
+};
 
 interface AlertRow {
   id: string;
