@@ -24,11 +24,11 @@ const toChartTime = (iso: string): UTCTimestamp => (Math.floor(Date.parse(iso) /
 const COLORS = {
   up: "#71e1c1",
   down: "#ff8f7b",
-  macd: "#d6ad5c",
-  signal: "#f0d695",
+  macd: "#2962ff",
+  signal: "#ff6d00",
   text: "#8ea39d",
   grid: "rgba(142, 163, 157, 0.08)",
-  crosshair: "rgba(214, 173, 92, 0.5)"
+  crosshair: "rgba(41, 98, 255, 0.5)"
 };
 
 function baseOptions(height: number) {
@@ -99,7 +99,7 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
     });
     const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false }, 1);
     const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
-    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
+    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
     const panes = api.panes();
     panes[0]?.setStretchFactor(2.2);
     panes[1]?.setStretchFactor(1);
@@ -222,7 +222,7 @@ export function MacdChart({ points, height = 260 }: MacdChartProps) {
     const api = createChart(container.current, baseOptions(height));
     const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false });
     const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
-    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 1, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
+    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
     chart.current = api;
     series.current = { hist, macd, signal };
     return () => {
