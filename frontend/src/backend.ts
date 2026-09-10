@@ -195,12 +195,21 @@ class SupabaseBackend implements Backend {
 
   async publicConfig(): Promise<PublicConfig> {
     const gold = (await this.heartbeats()).gold_mt5;
-    const details = (gold?.details || {}) as { symbol?: string; timeframes?: Record<string, unknown> };
+    const details = (gold?.details || {}) as {
+      symbol?: string;
+      timeframes?: Record<string, unknown>;
+      line_configured?: boolean;
+      line_bot_id?: string | null;
+      line_bot_add_url?: string | null;
+    };
     return {
       vapid_public_key: __VAPID_PUBLIC_KEY__,
       symbol: details.symbol || "XAUUSDm",
       timeframes: Object.keys(details.timeframes || {}).map(Number).filter(Boolean),
-      poll_interval_ms: 500
+      poll_interval_ms: 500,
+      line_configured: details.line_configured !== undefined ? Boolean(details.line_configured) : true,
+      line_bot_id: details.line_bot_id ?? null,
+      line_bot_add_url: details.line_bot_add_url ?? null
     };
   }
 

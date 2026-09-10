@@ -101,6 +101,8 @@ class Watcher:
             "symbol": settings.mt5_symbol,
             "directions": list(settings.alert_directions),
             "line_configured": self.line_notifier.is_configured,
+            "line_bot_id": settings.line_bot_id,
+            "line_bot_add_url": settings.line_bot_add_url,
             "last_poll_at": None,
             "last_error": None,
             "started_at": None,
