@@ -13,6 +13,7 @@ import pandas as pd
 
 from .config import Settings
 from .database import Database
+from .line_service import LineNotifier
 from .macd import calculate_macd, cross_at, event_id, iso_utc, point_from_row, utc_now
 from .market_data import MarketDataError, MarketDataSource
 from .push_service import PushService
@@ -87,16 +88,19 @@ class Watcher:
         self._candles: dict[int, list[dict[str, Any]]] = {}
         self._candles_published_until: dict[int, str] = {}
         self._candles_published_key: dict[int, str] = {}
+        self._forming_candles: dict[int, dict[str, Any]] = {}
         # Cloud uploads (candles, heartbeats) never run on the watcher thread: they are queued
         # here and sent by the outbox thread, so a slow network cannot delay alert detection.
         self._cloud_jobs: "queue.Queue[tuple[str, tuple[Any, ...]]]" = queue.Queue()
         self._heartbeat_queued = False
+        self.line_notifier = LineNotifier(settings)
         self._snapshot: dict[str, Any] = {
             "running": False,
             "connected": False,
             "source": settings.data_source,
             "symbol": settings.mt5_symbol,
             "directions": list(settings.alert_directions),
+            "line_configured": self.line_notifier.is_configured,
             "last_poll_at": None,
             "last_error": None,
             "started_at": None,
@@ -134,12 +138,20 @@ class Watcher:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            timeframes = {}
+            for key, value in self._snapshot["timeframes"].items():
+                card = dict(value)
+                try:
+                    tf_num = int(key)
+                    if tf_num in self._forming_candles:
+                        card["forming"] = dict(self._forming_candles[tf_num])
+                except (ValueError, TypeError):
+                    pass
+                timeframes[key] = card
             return {
                 **self._snapshot,
                 "delivery_alive": bool(self._delivery_thread and self._delivery_thread.is_alive()),
-                "timeframes": {
-                    key: dict(value) for key, value in self._snapshot["timeframes"].items()
-                },
+                "timeframes": timeframes,
             }
 
     def _update(self, **values: Any) -> None:
@@ -150,6 +162,12 @@ class Watcher:
         """Recent closed candles with MACD for one timeframe (oldest first)."""
         with self._lock:
             return [dict(row) for row in self._candles.get(timeframe, [])]
+
+    def forming_candle(self, timeframe: int) -> dict[str, Any] | None:
+        """Current unclosed candle being formed in real time."""
+        with self._lock:
+            val = self._forming_candles.get(timeframe)
+            return dict(val) if val else None
 
     # ------------------------------------------------------------------ chart data
 
@@ -345,6 +363,11 @@ class Watcher:
     def _deliver_one(self, alert: dict[str, Any]) -> None:
         try:
             result = self.push.broadcast_alert(alert)
+            if self.line_notifier.is_configured:
+                try:
+                    self.line_notifier.send_alert(alert)
+                except Exception as line_exc:
+                    logger.warning("LINE alert failed for %s: %s", alert["id"], line_exc)
             if result["failed"] == 0:
                 self.database.complete_outbox(alert["id"])
                 self._update(last_push_at=iso_utc(utc_now()), last_push_error=None)
@@ -367,9 +390,26 @@ class Watcher:
 
     def _poll_timeframe(self, timeframe: int) -> list[dict[str, Any]]:
         probe = self.source.bars(self.settings.mt5_symbol, timeframe, 2)
-        probe_current = _as_utc(probe.sort_values("time").iloc[-1]["time"])
+        sorted_probe = probe.sort_values("time")
+        last_probe_row = sorted_probe.iloc[-1]
+        probe_current = _as_utc(last_probe_row["time"])
         observed_at = utc_now()
         self._observe_bar_clock(timeframe, probe_current, observed_at)
+
+        close_val = _finite(last_probe_row.get("close"))
+        if close_val is not None:
+            open_val = _finite(last_probe_row.get("open", close_val))
+            high_val = _finite(last_probe_row.get("high", close_val))
+            low_val = _finite(last_probe_row.get("low", close_val))
+            forming = {
+                "time": iso_utc(pd.Timestamp(last_probe_row["time"]).to_pydatetime()),
+                "open": open_val if open_val is not None else close_val,
+                "high": high_val if high_val is not None else close_val,
+                "low": low_val if low_val is not None else close_val,
+                "close": close_val,
+            }
+            with self._lock:
+                self._forming_candles[timeframe] = forming
 
         scheduled_close = probe_current.to_pydatetime() + pd.Timedelta(minutes=timeframe)
         close_by_clock = (

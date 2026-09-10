@@ -32,6 +32,7 @@ export interface Backend {
   subscribe(subscription: PushSubscriptionJSON): Promise<void>;
   unsubscribe(endpoint: string): Promise<void>;
   testPush(): Promise<TestPushResult>;
+  testLine?(): Promise<{ ok: boolean; message?: string }>;
   /** Recent closed gold candles with MACD for one timeframe (oldest first). */
   candles(timeframe: number, limit?: number): Promise<CandleSeries>;
   /** SET tickers: latest scanner state; empty on the legacy backend. */
@@ -87,6 +88,11 @@ class LegacyBackend implements Backend {
 
   testPush(): Promise<TestPushResult> {
     return api.testPush(this.token());
+  }
+
+  async testLine(): Promise<{ ok: boolean; message?: string }> {
+    const res = await api.testLine(this.token());
+    return { ok: res.ok, message: "LINE test notification delivered." };
   }
 
   candles(timeframe: number, limit = 200): Promise<CandleSeries> {
@@ -309,6 +315,12 @@ class SupabaseBackend implements Backend {
     if (error) throw new Error(error.message || "push-fanout failed");
     const result = (data || {}) as Partial<TestPushResult>;
     return { subscriptions: result.subscriptions ?? 0, accepted: result.accepted ?? 0, failed: result.failed ?? 0 };
+  }
+
+  async testLine(): Promise<{ ok: boolean; message?: string }> {
+    const { error } = await this.client.functions.invoke("push-fanout", { body: { mode: "test" } });
+    if (error) throw new Error(error.message || "LINE test failed");
+    return { ok: true, message: "LINE test triggered via cloud fan-out." };
   }
 
   async candles(timeframe: number, limit = 200): Promise<CandleSeries> {

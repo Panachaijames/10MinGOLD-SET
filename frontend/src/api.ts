@@ -12,6 +12,7 @@ export interface TimeframeState {
   feed_fresh: boolean;
   /** True when the candle was closed by the wall clock (no next candle yet) and may still be re-evaluated. */
   provisional?: boolean;
+  forming?: Candle | null;
 }
 
 export type Direction = "bullish" | "bearish";
@@ -90,6 +91,7 @@ export interface CandleSeries {
   symbol: string;
   timeframe_minutes: number;
   candles: Candle[];
+  forming?: Candle | null;
 }
 
 /** One MACD point per closed 15m bar for a SET ticker (no OHLC available from the free scanner). */
@@ -119,6 +121,9 @@ export interface PublicConfig {
   symbol: string;
   timeframes: number[];
   poll_interval_ms: number;
+  line_configured?: boolean;
+  line_bot_id?: string | null;
+  line_bot_add_url?: string | null;
 }
 
 async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
@@ -157,6 +162,10 @@ export const api = {
     }),
   testPush: (token: string) =>
     request<{ ok: boolean; subscriptions: number; accepted: number; failed: number }>("/api/push/test", token, {
+      method: "POST"
+    }),
+  testLine: (token: string) =>
+    request<{ ok: boolean; result: any }>("/api/line/test", token, {
       method: "POST"
     })
 };

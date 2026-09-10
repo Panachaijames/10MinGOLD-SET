@@ -60,10 +60,22 @@ class Settings:
     data_dir: Path
     frontend_dist: Path
     log_level: str
+    line_channel_access_token: str | None = None
+    line_user_id: str | None = None
+    line_bot_id: str | None = None
+    line_bot_add_url: str | None = None
+    twelvedata_api_key: str | None = None
+    twelvedata_symbol: str = "XAU/USD"
 
     @classmethod
     def from_env(cls) -> "Settings":
         data_source = os.getenv("DATA_SOURCE", "mt5").strip().lower()
+        if data_source not in {"mt5", "demo", "twelvedata"}:
+            raise ValueError(f"DATA_SOURCE must be 'mt5', 'demo', or 'twelvedata', received: {data_source}")
+
+        twelvedata_api_key = os.getenv("TWELVEDATA_API_KEY", "").strip() or None
+        if data_source == "twelvedata" and not twelvedata_api_key:
+            raise RuntimeError("TWELVEDATA_API_KEY is required when DATA_SOURCE=twelvedata")
 
         data_dir_value = os.getenv("DATA_DIR", "backend/data")
         data_dir = Path(data_dir_value)
@@ -118,4 +130,13 @@ class Settings:
             data_dir=data_dir,
             frontend_dist=PROJECT_ROOT / "frontend" / "dist",
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip() or None,
+            line_user_id=os.getenv("LINE_USER_ID", "").strip() or None,
+            line_bot_id=os.getenv("LINE_BOT_ID", "").strip() or None,
+            line_bot_add_url=(
+                os.getenv("LINE_BOT_ADD_URL", "").strip()
+                or (f"https://line.me/R/ti/p/@{os.getenv('LINE_BOT_ID', '').strip().lstrip('@')}" if os.getenv("LINE_BOT_ID", "").strip() else None)
+            ),
+            twelvedata_api_key=twelvedata_api_key,
+            twelvedata_symbol=os.getenv("TWELVEDATA_SYMBOL", "XAU/USD").strip() or "XAU/USD",
         )

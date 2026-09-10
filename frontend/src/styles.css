@@ -206,3 +206,8 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .set-table tr.selected td { background: rgba(113,225,193,.06); }
 .set-table .empty-cell { color: var(--muted); padding: 18px 12px; }
 @media (max-width: 720px) { .chart-legend-note { margin-left: 0; width: 100%; } .set-table th:nth-child(5), .set-table td:nth-child(5) { display: none; } }
+
+.live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; background: rgba(113,225,193,.14); color: var(--mint); border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 6px var(--mint); animation: live-pulse 1.4s ease-in-out infinite; }
+@keyframes live-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.85); } }
+

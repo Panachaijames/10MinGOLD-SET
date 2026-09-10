@@ -165,6 +165,80 @@ function ShareAppDialog({ open, onClose }: ShareAppDialogProps) {
   );
 }
 
+interface LineBotDialogProps {
+  open: boolean;
+  onClose: () => void;
+  config: PublicConfig | null;
+  onSendTest: () => Promise<void>;
+  loading: boolean;
+}
+
+function LineBotDialog({ open, onClose, config, onSendTest, loading }: LineBotDialogProps) {
+  const addUrl =
+    config?.line_bot_add_url ||
+    (config?.line_bot_id ? `https://line.me/R/ti/p/@${config.line_bot_id.replace(/^@/, "")}` : "https://line.me/R/nv/recommendOA");
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    QRCode.toDataURL(addUrl, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 224,
+      color: { dark: "#061310ff", light: "#ffffffff" }
+    })
+      .then((val) => { if (!cancelled) setQrDataUrl(val); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [open, addUrl]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="share-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="share-dialog panel" role="dialog" aria-modal="true" aria-labelledby="line-bot-title">
+        <button className="share-close" type="button" onClick={onClose} aria-label="Close" autoFocus>×</button>
+        <span className="eyebrow" style={{ color: "#06c755" }}>LINE Messaging API</span>
+        <h2 id="line-bot-title">Add Aurum Signal Bot</h2>
+        <p>Scan this QR code with your phone or tap the button to add the bot on LINE.</p>
+        <div className="qr-frame">
+          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt="LINE Bot QR code" /> : <span>Generating QR…</span>}
+        </div>
+        {config?.line_bot_id && <code className="share-url">LINE Basic ID: {config.line_bot_id}</code>}
+        <div className="share-actions">
+          <a
+            className="primary"
+            href={addUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ textDecoration: "none", textAlign: "center", display: "inline-block", background: "#06c755", borderColor: "#06c755", color: "#fff" }}
+          >
+            Open in LINE
+          </a>
+          <button className="ghost" type="button" disabled={loading} onClick={onSendTest}>
+            {loading ? "Sending…" : "Test LINE Alert"}
+          </button>
+        </div>
+        <ol className="install-steps">
+          <li>Scan the QR code with your LINE app or tap <strong>Open in LINE</strong>.</li>
+          <li>Tap <strong>Add Friend</strong> to start receiving alerts.</li>
+          <li>Tap <strong>Test LINE Alert</strong> above to verify notifications on your phone!</li>
+        </ol>
+      </section>
+    </div>
+  );
+}
+
 function alertHeadline(alert: AlertRecord): string {
   if (alert.direction === "info") return alert.title || "System notice";
   const symbol = alert.source && alert.source !== "gold_mt5" ? `${alert.symbol.replace(/^SET:/, "")} · ` : "";
@@ -188,6 +262,7 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [standalone, setStandalone] = useState(window.matchMedia("(display-mode: standalone)").matches);
   const [shareOpen, setShareOpen] = useState(false);
+  const [lineModalOpen, setLineModalOpen] = useState(false);
   const [timeframe, setTimeframe] = useState<number>(() => Number(localStorage.getItem("aurum-timeframe")) || 10);
   const [candlesByTf, setCandlesByTf] = useState<Record<number, CandleSeries>>({});
   const [chartError, setChartError] = useState("");
@@ -299,7 +374,7 @@ export default function App() {
     if (!authed) return;
     void refreshRef.current();
     // Realtime (cloud) or polling (legacy). The poll stays on as a fallback in both modes.
-    const timer = window.setInterval(() => void refreshRef.current(true), backend.onChange ? 30_000 : 4000);
+    const timer = window.setInterval(() => void refreshRef.current(true), backend.onChange ? 30_000 : 2000);
     // Realtime emits one event per changed row (a watcher restart publishes hundreds of candles
     // at once), so events are coalesced into a single refresh per second.
     let debounce: number | undefined;
@@ -388,7 +463,13 @@ export default function App() {
     setNotice("");
     try {
       const permission = await Notification.requestPermission();
-      if (permission !== "granted") throw new Error("Notification permission was not granted.");
+      if (permission !== "granted") {
+        if (config.line_configured) {
+          setNotice("Browser push skipped. LINE alerts are active and delivering all signals directly to your phone!");
+          return;
+        }
+        throw new Error("Notification permission was not granted.");
+      }
       const registration = await navigator.serviceWorker.ready;
       let subscription = await registration.pushManager.getSubscription();
       if (subscription && arrayBufferToUrlBase64(subscription.options.applicationServerKey) !== config.vapid_public_key) {
@@ -439,6 +520,19 @@ export default function App() {
       setNotice(`Test accepted for ${result.accepted} device${result.accepted === 1 ? "" : "s"}${result.failed ? `, ${result.failed} failed` : ""}.`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Test failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendLineTest = async () => {
+    if (!backend.testLine) return;
+    setLoading(true);
+    try {
+      const result = await backend.testLine();
+      setNotice(result.message || "LINE test notification delivered!");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "LINE test failed");
     } finally {
       setLoading(false);
     }
@@ -560,11 +654,30 @@ export default function App() {
             <div className="action-copy">
               <div className="bell"><BellIcon /></div>
               <div>
-                <strong>{pushEnabled ? "Push is armed" : "Enable alerts on this device"}</strong>
-                <span>{status?.subscriptions || 0} connected device{status?.subscriptions === 1 ? "" : "s"}</span>
+                <strong>{config?.line_configured ? (pushEnabled ? "LINE & Browser Push Active" : "LINE Alerts Active 🟢") : (pushEnabled ? "Push is armed" : "Enable alerts on this device")}</strong>
+                <span>
+                  {config?.line_configured
+                    ? `Instant alerts sent to your LINE account${pushEnabled ? ` · ${status?.subscriptions || 0} browser device(s)` : ""}`
+                    : `${status?.subscriptions || 0} connected device${status?.subscriptions === 1 ? "" : "s"}`}
+                </span>
               </div>
             </div>
             <div className="button-row">
+              {config?.line_configured && (
+                <>
+                  <button
+                    className="primary"
+                    type="button"
+                    style={{ background: "#06c755", borderColor: "#06c755", color: "#fff", fontWeight: 600 }}
+                    onClick={() => setLineModalOpen(true)}
+                  >
+                    + Add LINE Bot
+                  </button>
+                  <button className="ghost" disabled={loading} onClick={sendLineTest} title="Test LINE Messaging API notification">
+                    {loading ? "Testing…" : "Test LINE"}
+                  </button>
+                </>
+              )}
               <button
                 className="ghost"
                 type="button"
@@ -578,12 +691,12 @@ export default function App() {
               {!standalone && <button className="ghost" onClick={install}>Install app</button>}
               {pushEnabled ? (
                 <>
-                  <button className="ghost" disabled={loading} onClick={sendTest}>Send test</button>
-                  <button className="quiet" disabled={loading} onClick={disableNotifications}>Disable</button>
+                  <button className="ghost" disabled={loading} onClick={sendTest}>Browser test</button>
+                  <button className="quiet" disabled={loading} onClick={disableNotifications}>Mute web</button>
                 </>
               ) : (
-                <button className="primary" disabled={loading} onClick={enableNotifications}>
-                  {loading ? "Connecting…" : "Enable notifications"}
+                <button className={config?.line_configured ? "ghost" : "primary"} disabled={loading} onClick={enableNotifications} title="Optional: receive browser notifications on this PC">
+                  {loading ? "Connecting…" : (config?.line_configured ? "+ Browser push" : "Enable notifications")}
                 </button>
               )}
             </div>
@@ -637,6 +750,7 @@ export default function App() {
                 alerts={alerts}
                 symbol={candlesByTf[timeframe].symbol}
                 timeframe={timeframe}
+                forming={status?.watcher.timeframes[String(timeframe)]?.forming || candlesByTf[timeframe]?.forming}
               />
             ) : !chartError ? (
               <div className="empty-state">
@@ -740,6 +854,13 @@ export default function App() {
         </>
       )}
       <ShareAppDialog open={shareOpen} onClose={() => setShareOpen(false)} />
+      <LineBotDialog
+        open={lineModalOpen}
+        onClose={() => setLineModalOpen(false)}
+        config={config}
+        onSendTest={sendLineTest}
+        loading={loading}
+      />
     </main>
   );
 }

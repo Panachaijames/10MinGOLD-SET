@@ -238,6 +238,46 @@ async function sweep() {
   return result;
 }
 
+async function sendLineAlert(alert: AlertRow | null): Promise<void> {
+  const token = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN");
+  const userId = Deno.env.get("LINE_USER_ID");
+  if (!token || !userId) return;
+
+  const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "/").replace(/\/?$/, "/");
+  const lines: string[] = [];
+  if (alert) {
+    const emoji = alert.direction === "bullish" ? "🟢" : alert.direction === "bearish" ? "🔴" : "ℹ️";
+    lines.push(`${emoji} AURUM SIGNAL: ${alert.symbol} M${alert.timeframe}`);
+    lines.push(`Direction: ${alert.direction.toUpperCase()} MACD Cross`);
+    lines.push(alert.body);
+    if (!appUrl.startsWith("http://localhost")) {
+      lines.push(`Chart: ${appUrl}?alert=${encodeURIComponent(alert.id)}`);
+    }
+  } else {
+    lines.push("🔔 Aurum Signal: LINE Notification Test (Cloud)");
+    lines.push("Status: Connected to Supabase Cloud Fan-Out");
+  }
+
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: "text", text: lines.join("\n") }],
+      }),
+    });
+    if (!res.ok) {
+      console.error("LINE push error:", res.status, await res.text());
+    }
+  } catch (err) {
+    console.error("LINE push network exception:", err);
+  }
+}
+
 Deno.serve(async (req) => {
   const headers = corsHeaders();
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
@@ -255,14 +295,17 @@ Deno.serve(async (req) => {
   if (mode === "test") {
     if (!secret && !(await isUserCaller(req))) return unauthorized();
     // The user is waiting for the result, so send synchronously.
-    const result = await fanOut(null, "test");
+    const [result] = await Promise.all([fanOut(null, "test"), sendLineAlert(null)]);
     return Response.json({ ok: true, ...result }, { headers });
   }
   if (!secret) return unauthorized();
 
   if (mode === "webhook") {
     const record = body.record as AlertRow;
-    const work = fanOut(record, "alert").catch((error) => console.error("fan-out failed", error));
+    const work = Promise.all([
+      fanOut(record, "alert").catch((error) => console.error("fan-out failed", error)),
+      sendLineAlert(record).catch((error) => console.error("LINE fan-out failed", error)),
+    ]);
     if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(work);
     else await work;
     return Response.json({ accepted: true, alert_id: record.id }, { status: 202, headers });

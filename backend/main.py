@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .database import Database
 from .instance_lock import InstanceLockedError, acquire_instance_lock
+from .line_service import LineNotifier
 from .market_data import make_source
 from .push_service import PushService
 from .watcher import Watcher
@@ -52,6 +53,7 @@ except InstanceLockedError as exc:
     raise SystemExit(str(exc)) from exc
 database = Database(settings.data_dir / "watcher.sqlite3")
 push_service = PushService(settings, database)
+line_notifier = LineNotifier(settings)
 if settings.push_mode == "cloud":
     from .supabase_repo import SupabaseSink
 
@@ -156,6 +158,9 @@ def public_config() -> dict[str, Any]:
         "symbol": settings.mt5_symbol,
         "timeframes": settings.timeframes,
         "poll_interval_ms": round(settings.poll_interval_seconds * 1000),
+        "line_configured": line_notifier.is_configured,
+        "line_bot_id": settings.line_bot_id,
+        "line_bot_add_url": settings.line_bot_add_url,
     }
 
 
@@ -183,6 +188,7 @@ def candles(timeframe: int = 10, limit: int = 200) -> dict[str, Any]:
         "symbol": settings.mt5_symbol,
         "timeframe_minutes": timeframe,
         "candles": rows[-max(1, min(limit, 500)):],
+        "forming": watcher.forming_candle(timeframe),
     }
 
 
@@ -226,6 +232,24 @@ def test_push() -> dict[str, Any]:
             raise HTTPException(status_code=429, detail="Wait 10 seconds before sending another test")
         _last_test_push_at = now
     return {"ok": True, **push_service.broadcast_test()}
+
+
+@app.post("/api/line/test", dependencies=[Depends(require_token)])
+def test_line() -> dict[str, Any]:
+    if not line_notifier.is_configured:
+        raise HTTPException(
+            status_code=400,
+            detail="LINE is not configured. Add LINE_CHANNEL_ACCESS_TOKEN and LINE_USER_ID to .env",
+        )
+    result = line_notifier.send_test()
+    if not result.get("ok"):
+        error_msg = result.get("error", "unknown error")
+        details = result.get("details", "")
+        raise HTTPException(
+            status_code=502,
+            detail=f"LINE push failed: {error_msg} {details}".strip(),
+        )
+    return {"ok": True, "result": result}
 
 
 @app.post("/api/push/receipts")

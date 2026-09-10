@@ -69,11 +69,12 @@ interface CandleChartProps {
   alerts: AlertRecord[];
   symbol: string;
   timeframe: number;
+  forming?: Candle | null;
   height?: number;
 }
 
 /** Candlesticks on top, MACD (histogram + MACD + signal) below, alerts as arrows on the candles. */
-export function CandleChart({ candles, alerts, symbol, timeframe, height = 460 }: CandleChartProps) {
+export function CandleChart({ candles, alerts, symbol, timeframe, forming, height = 460 }: CandleChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<{
@@ -118,9 +119,25 @@ export function CandleChart({ candles, alerts, symbol, timeframe, height = 460 }
   useEffect(() => {
     const current = series.current;
     if (!current) return;
-    current.candles.setData(
-      candles.map((c) => ({ time: toChartTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close }))
-    );
+    const candleData = candles.map((c) => ({
+      time: toChartTime(c.time),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close
+    }));
+
+    if (forming) {
+      const fTime = toChartTime(forming.time);
+      const lastIdx = candleData.length - 1;
+      const bar = { time: fTime, open: forming.open, high: forming.high, low: forming.low, close: forming.close };
+      if (lastIdx >= 0 && candleData[lastIdx].time === fTime) {
+        candleData[lastIdx] = bar;
+      } else if (lastIdx < 0 || (candleData[lastIdx].time as number) < (fTime as number)) {
+        candleData.push(bar);
+      }
+    }
+    current.candles.setData(candleData);
     current.hist.setData(
       candles
         .filter((c) => c.histogram != null)
@@ -152,10 +169,33 @@ export function CandleChart({ candles, alerts, symbol, timeframe, height = 460 }
     if (timeScale && (firstLoad || (advanced && timeScale.scrollPosition() >= 0))) timeScale.scrollToRealTime();
   }, [candles, alerts, symbol, timeframe]);
 
+  // Live in-place update for forming candle ticks
+  useEffect(() => {
+    const current = series.current;
+    if (!current || !forming) return;
+    try {
+      current.candles.update({
+        time: toChartTime(forming.time),
+        open: forming.open,
+        high: forming.high,
+        low: forming.low,
+        close: forming.close
+      });
+    } catch {
+      // Ignore transient timestamp order races
+    }
+  }, [forming]);
+
   const last = candles.length ? candles[candles.length - 1] : null;
+  const livePrice = forming ? forming.close : last?.close;
   return (
     <div className="chart-wrap">
       <div className="chart-legend">
+        {livePrice != null && (
+          <span className="live-badge">
+            <span className="live-dot" /> LIVE {livePrice.toFixed(2)}
+          </span>
+        )}
         <span><i style={{ background: COLORS.macd }} /> MACD {last?.macd?.toFixed(4) ?? "—"}</span>
         <span><i style={{ background: COLORS.signal }} /> Signal {last?.signal?.toFixed(4) ?? "—"}</span>
         <span><i style={{ background: (last?.histogram ?? 0) >= 0 ? COLORS.up : COLORS.down }} /> Hist {last?.histogram?.toFixed(4) ?? "—"}</span>
