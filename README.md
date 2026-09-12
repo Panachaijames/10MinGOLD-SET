@@ -143,20 +143,31 @@ If the watcher briefly restarts, it catches a crossover up to 15 minutes old ins
 - Keep Windows and MetaTrader 5 running; start the watcher with `scripts/start.ps1` or the scheduled task. The watcher keeps the laptop awake while it runs, but it cannot override lid-close: keep the lid open or set the lid action to "Do nothing", and stay on AC power.
 - Never run a second MT5 Python client (including `scripts/check_mt5.py`) while the watcher is running; the lock file makes the second one exit.
 - The watcher reconnects with exponential backoff if MT5 becomes unavailable.
+- **Changing broker changes two settings.** Gold is named differently on every server, so set
+  `MT5_SYMBOL` to the name in Market Watch (Wisdom Financial calls it `GOLD.wis`, Exness used
+  `XAUUSDm`); a wrong name fails every cycle with "MT5 symbol is unavailable". MT5 also stamps bars
+  in the broker's own timezone and never says which one, so the watcher measures it from the first
+  tick that moves and stores it in `backend/data/mt5_server_offset.json`, re-checking hourly so a
+  broker DST change needs no restart. Wisdom Financial runs at UTC+3; Exness ran at UTC. The
+  measurement needs a trading market: on a closed weekend with no stored value the watcher says so
+  and waits, or set `MT5_SERVER_UTC_OFFSET_HOURS` in `.env` to skip the wait. Session hours are
+  broker-specific too: Wisdom gold trades Sunday 22:00 to Friday 21:00 UTC with a 21:00-22:00 break,
+  which the cloud gate in `ops.gold_market_open()` encodes.
 - Runtime state lives in `backend/data/watcher.sqlite3`; the VAPID private key is `backend/data/vapid_private_key.pem`; logs rotate in `backend/data/logs/`. All are ignored by Git. Back up the key and database if you do not want devices to resubscribe after a reinstall.
 - Never put MT5 login credentials in the React app or repository. This project relies on the existing signed-in terminal session.
 - Use **Send test** after installing every device. Keep an MT5-native notification as a temporary backup while comparing delivery behavior for the first week.
 
 ## Phase 2: SET stocks with DAOL SEC
 
-DAOL SEC does not currently expose SET equity market data through Settrade Open API, so it should not be wired into this watcher with an unofficial scraping dependency. The practical later route is TradingView Essential plus the real-time SET exchange add-on: create ten bullish crossover alerts for five symbols across M10 and M15, and send their webhooks into this same alert history. Gold remains on Exness MT5 so its prices match the account exactly.
+DAOL SEC does not currently expose SET equity market data through Settrade Open API, so it should not be wired into this watcher with an unofficial scraping dependency. The practical later route is TradingView Essential plus the real-time SET exchange add-on: create ten bullish crossover alerts for five symbols across M10 and M15, and send their webhooks into this same alert history. Gold stays on the broker's own MT5 feed so its prices match the account exactly.
 
 ## Cost comparison (checked September 2026)
 
 | Option | Up-front | Ongoing | Fit for this project |
 |---|---:|---:|---|
-| Existing Windows PC + React PWA + Tailscale | $0 | $0 software, plus electricity | **Best first version.** Exact Exness feed and the code is already built. |
-| Exness Windows VPS | $0 if the account is eligible | $0 while eligibility is maintained | Best $0 always-on upgrade; check eligibility in the Exness Personal Area. |
+| Existing Windows PC + React PWA + Tailscale | $0 | $0 software, plus electricity | **Best first version.** Exact broker feed and the code is already built. |
+| Supabase cloud failover (`gold-scan`) | $0 | $0 on the free tiers | **Always-on safety net.** Spot-gold candles, so signals are close but not identical to the broker chart. |
+| Broker Windows VPS | $0 if the account is eligible | $0 while eligibility is maintained | Best $0 always-on upgrade with exact broker data; check eligibility in the client portal. |
 | AWS Lightsail Windows, 2 GB | $0 setup | $22/month | Predictable always-on fallback with enough RAM for MT5 + Python. |
 | MQL5 virtual hosting | $0 setup | $15/month, less on long terms | **Not compatible with this Python PWA watcher.** It only becomes relevant after rewriting the watcher as an MQL5 EA. |
 | TradingView for five SET stocks | $0 setup | $14.95/month effective when Essential is annual ($12.95 + $2 SET data) | Best phase-2 route with DAOL; 20 technical alerts cover 5 stocks × 2 timeframes. |
@@ -202,11 +213,12 @@ deduplication and synchronization contract.
 
    ```powershell
    npx supabase@2.116.0 secrets set VAPID_KEYS_JWK='{"publicKey":{...},"privateKey":{...}}' VAPID_SUBJECT=mailto:you@example.com PUBLIC_APP_URL=https://<your-app>/
-   npx supabase@2.116.0 functions deploy push-fanout set-scan push-receipt
+   npx supabase@2.116.0 functions deploy push-fanout set-scan push-receipt gold-scan
    ```
 
-   `verify_jwt = false` for all three is already in `supabase/config.toml`; the functions check the
-   secret key (cron, trigger, laptop) or the user JWT (PWA "Send test") themselves.
+   `verify_jwt = false` for all four is already in `supabase/config.toml`; the functions check the
+   secret key (cron, trigger, laptop) or the user JWT (PWA "Send test") themselves. `gold-scan`
+   also needs the cloud feed key: `npx supabase@2.116.0 secrets set TWELVEDATA_API_KEY=...`.
 
 3. **One user.** Dashboard > Authentication > Users > Add user (email + password, confirmed), then
    Authentication > Sign In / Providers > turn **off** "Allow new users to sign up".
@@ -235,7 +247,21 @@ deduplication and synchronization contract.
    `aurum-set-scan` polls at :01/:16/:31/:46/:56 UTC inside SET sessions only (gate in
    `ops.set_scan_gate()`), and `set_holidays` is editable from SQL.
 
-7. **Keep the Free project awake.** Cron-only traffic may not count as activity; the laptop's weekday
+7. **Gold cloud failover.** `gold-scan` keeps alerts arriving while the laptop and MT5 are off. The
+   cron job `aurum-gold-scan` fires a minute after each candle boundary (:01 :11 :16 :21 :31 :41 :46
+   :51 UTC) and `ops.gold_scan_gate()` only posts to the function when `heartbeats.gold_mt5` has been
+   quiet for `gold_cloud_takeover_seconds`, so the broker feed always wins when it is available.
+   Leave `gold_cloud_dry_run = true` for a session and read `heartbeats.gold_cloud.details.summary`,
+   then set `gold_cloud_dry_run = false` and `gold_cloud_enabled = true`. Force a one-off run with
+   `?force=1`.
+
+   Its candles come from Twelve Data spot gold, not from the broker, so it is a stand-in and not a
+   copy. Measured over four trading days on M15, the broker feed produced 26 crosses and the cloud
+   feed 37, of which 18 were the same bar and direction; prices agreed to a mean of $0.18. The cloud
+   feed also prints candles through the broker's nightly break, which shifts the moving averages.
+   Failover alerts carry `source = 'gold_cloud'` and read "Cloud feed" in the PWA history.
+
+8. **Keep the Free project awake.** Cron-only traffic may not count as activity; the laptop's weekday
    inserts help, and a twice-weekly external REST ping (GitHub Actions) is the belt-and-braces option.
 
 Useful checks: `select * from cron.job_run_details order by start_time desc limit 20;`,

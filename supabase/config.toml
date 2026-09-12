@@ -396,6 +396,9 @@ import_map = "./functions/push-fanout/deno.json"
 [functions.set-scan]
 verify_jwt = false
 
+[functions.gold-scan]
+verify_jwt = false
+
 [functions.push-receipt]
 verify_jwt = false
 

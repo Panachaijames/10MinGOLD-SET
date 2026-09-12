@@ -246,8 +246,12 @@ function LineBotDialog({ open, onClose, config, onSendTest, loading }: LineBotDi
 
 function alertHeadline(alert: AlertRecord): string {
   if (alert.direction === "info") return alert.title || "System notice";
-  const symbol = alert.source && alert.source !== "gold_mt5" ? `${alert.symbol.replace(/^SET:/, "")} · ` : "";
-  return `${symbol}${alert.direction === "bearish" ? "▼ Bearish" : "▲ Bullish"} MACD crossover`;
+  const prefix = alert.source === "gold_cloud"
+    ? "Cloud feed · "
+    : alert.source && alert.source !== "gold_mt5"
+      ? `${alert.symbol.replace(/^SET:/, "")} · `
+      : "";
+  return `${prefix}${alert.direction === "bearish" ? "▼ Bearish" : "▲ Bullish"} MACD crossover`;
 }
 
 export default function App() {
@@ -715,6 +719,9 @@ export default function App() {
               </div>
               <div className="diagnostic-metrics">
                 <div><span>Laptop watcher</span><strong>{formatAgo(cloud.gold_last_seen, clock)}</strong></div>
+                {cloud.gold_cloud_last_seen && (
+                  <div><span>Cloud failover</span><strong>{formatAgo(cloud.gold_cloud_last_seen, clock)}</strong></div>
+                )}
                 <div><span>SET scanner</span><strong>{formatAgo(cloud.set_last_seen, clock)}</strong></div>
                 <div><span>Push fan-out</span><strong>{formatAgo(cloud.push_last_seen, clock)}</strong></div>
               </div>

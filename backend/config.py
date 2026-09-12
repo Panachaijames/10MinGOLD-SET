@@ -26,6 +26,17 @@ def _csv_ints(value: str) -> tuple[int, ...]:
     return values
 
 
+def _server_offset(value: str) -> float | None:
+    """None means "measure the broker server clock from a live tick"."""
+    text = value.strip().lower()
+    if not text or text == "auto":
+        return None
+    hours = float(text)
+    if not -12 <= hours <= 14:
+        raise ValueError(f"MT5_SERVER_UTC_OFFSET_HOURS must be between -12 and 14, received: {hours}")
+    return hours
+
+
 def _csv_directions(value: str) -> tuple[str, ...]:
     values = tuple(dict.fromkeys(item.strip().lower() for item in value.split(",") if item.strip()))
     unsupported = set(values) - {"bullish", "bearish"}
@@ -42,6 +53,7 @@ class Settings:
     data_source: str
     mt5_symbol: str
     mt5_terminal_path: str | None
+    mt5_server_utc_offset_hours: float | None
     timeframes: tuple[int, ...]
     alert_directions: tuple[str, ...]
     poll_interval_seconds: float
@@ -109,6 +121,7 @@ class Settings:
             data_source=data_source,
             mt5_symbol=os.getenv("MT5_SYMBOL", "XAUUSDm").strip(),
             mt5_terminal_path=os.getenv("MT5_TERMINAL_PATH", "").strip() or None,
+            mt5_server_utc_offset_hours=_server_offset(os.getenv("MT5_SERVER_UTC_OFFSET_HOURS", "auto")),
             timeframes=_csv_ints(os.getenv("TIMEFRAMES", "10,15")),
             alert_directions=_csv_directions(os.getenv("ALERT_DIRECTIONS", "bullish,bearish")),
             poll_interval_seconds=max(0.25, float(os.getenv("POLL_INTERVAL_SECONDS", "0.5"))),

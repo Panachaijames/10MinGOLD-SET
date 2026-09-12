@@ -39,6 +39,8 @@ class FakePush:
 def _settings(directory: str, **overrides):
     base = dict(
         data_source="demo",
+        # Pinned so the assertions below do not follow whichever broker symbol .env carries.
+        mt5_symbol="XAUUSDm",
         data_dir=Path(directory),
         timeframes=(10,),
         history_bars=150,

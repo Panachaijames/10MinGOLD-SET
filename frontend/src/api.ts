@@ -46,6 +46,8 @@ export interface StatusResponse {
   /** Present only when the PWA is served from the Supabase backend. */
   cloud?: {
     gold_last_seen: string | null;
+    gold_cloud_last_seen: string | null;
+    gold_cloud_dry_run: boolean | null;
     set_last_seen: string | null;
     set_update_mode: string | null;
     set_dry_run: boolean | null;
@@ -58,7 +60,7 @@ export interface AlertRecord {
   symbol: string;
   timeframe_minutes: number;
   direction: AlertDirection;
-  /** Cloud rows carry the producer (gold_mt5, set_tv, system) and pre-rendered text. */
+  /** Cloud rows carry the producer (gold_mt5, gold_cloud, set_tv, system) and pre-rendered text. */
   source?: string;
   title?: string;
   body?: string;

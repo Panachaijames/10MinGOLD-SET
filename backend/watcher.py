@@ -109,6 +109,7 @@ class Watcher:
             "last_push_at": None,
             "last_push_error": None,
             "keep_awake": False,
+            "server_utc_offset_h": None,
             "clock_skew_upper_s": None,
             "last_offline_gap_s": None,
             "last_offline_gap_at": None,
@@ -236,7 +237,11 @@ class Watcher:
                 self._note_cycle_gap(utc_now())
                 try:
                     self.source.connect()
-                    self._update(connected=True, last_error=None)
+                    self._update(
+                        connected=True,
+                        last_error=None,
+                        server_utc_offset_h=getattr(self.source, "server_utc_offset_hours", None),
+                    )
                     for timeframe in self.settings.timeframes:
                         try:
                             self._poll_timeframe(timeframe)
