@@ -8,7 +8,7 @@
 // The passcode is only ever stored as a SHA-256 hash. It is shown to the owner once at issue
 // time and cannot be recovered afterwards, so a leaked database does not leak working codes.
 import { callerCredentials, publishableKey, projectUrl } from "../_shared/auth.ts";
-import { adminClient } from "../_shared/db.ts";
+import { adminClient, corsHeaders } from "../_shared/db.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.115.0";
 
 const MAX_LABEL = 40;
@@ -42,10 +42,15 @@ async function caller(req: Request): Promise<{ id: string; email: string | null 
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  const headers = corsHeaders();
+  const json = (body: unknown, status = 200) => Response.json(body, { status, headers });
+  // The PWA calls this from the browser, which sends a preflight before any POST carrying an
+  // Authorization header. Without this the request is blocked before it is ever sent.
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+  if (req.method !== "POST") return new Response("method not allowed", { status: 405, headers });
 
   const user = await caller(req);
-  if (!user) return Response.json({ error: "sign in first" }, { status: 401 });
+  if (!user) return json({ error: "sign in first" }, 401);
 
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
   const action = String(body.action ?? "");
@@ -60,7 +65,7 @@ Deno.serve(async (req) => {
 
   // ------------------------------------------------------------------ issue
   if (action === "issue") {
-    if (!isOwner) return Response.json({ error: "only the owner can issue passcodes" }, { status: 403 });
+    if (!isOwner) return json({ error: "only the owner can issue passcodes" }, 403);
     const label = String(body.label ?? "guest").slice(0, MAX_LABEL) || "guest";
     // Deliberately fixed at one. A passcode is for a single device: the first to redeem it keeps
     // it, and the same code offered anywhere else is refused.
@@ -76,37 +81,37 @@ Deno.serve(async (req) => {
       .insert({ code_hash: await hashOf(code), label, max_uses: maxUses, expires_at: expiresAt })
       .select("id,label,max_uses,expires_at")
       .single();
-    if (error) return Response.json({ error: error.message }, { status: 500 });
+    if (error) return json({ error: error.message }, 500);
     // The only time the plaintext exists outside the owner's screen.
-    return Response.json({ ok: true, code, ...data });
+    return json({ ok: true, code, ...data });
   }
 
   // ------------------------------------------------------------------ revoke
   if (action === "revoke") {
-    if (!isOwner) return Response.json({ error: "only the owner can revoke" }, { status: 403 });
+    if (!isOwner) return json({ error: "only the owner can revoke" }, 403);
     const codeId = body.code_id ? String(body.code_id) : null;
     const memberId = body.member_id ? String(body.member_id) : null;
     const now = new Date().toISOString();
     if (codeId) {
       const { error } = await admin.from("access_codes").update({ revoked_at: now }).eq("id", codeId);
-      if (error) return Response.json({ error: error.message }, { status: 500 });
+      if (error) return json({ error: error.message }, 500);
     }
     if (memberId) {
       // Never let the owner lock themselves out by revoking their own membership.
-      if (memberId === user.id) return Response.json({ error: "that is your own access" }, { status: 400 });
+      if (memberId === user.id) return json({ error: "that is your own access" }, 400);
       const { error } = await admin.from("app_members").update({ revoked_at: now }).eq("user_id", memberId);
-      if (error) return Response.json({ error: error.message }, { status: 500 });
+      if (error) return json({ error: error.message }, 500);
     }
-    if (!codeId && !memberId) return Response.json({ error: "nothing to revoke" }, { status: 400 });
-    return Response.json({ ok: true });
+    if (!codeId && !memberId) return json({ error: "nothing to revoke" }, 400);
+    return json({ ok: true });
   }
 
   // ------------------------------------------------------------------ redeem
   if (action === "redeem") {
-    if (membership && !membership.revoked_at) return Response.json({ ok: true, already: true });
+    if (membership && !membership.revoked_at) return json({ ok: true, already: true });
 
     const supplied = String(body.code ?? "");
-    if (supplied.trim().length < 6) return Response.json({ error: "enter your passcode" }, { status: 400 });
+    if (supplied.trim().length < 6) return json({ error: "enter your passcode" }, 400);
 
     // One locked step in the database: validate, grant and count the claim together, so two
     // devices cannot both spend the same passcode.
@@ -114,20 +119,20 @@ Deno.serve(async (req) => {
       p_code_hash: await hashOf(supplied),
       p_user_id: user.id,
     });
-    if (redeemError) return Response.json({ error: redeemError.message }, { status: 500 });
+    if (redeemError) return json({ error: redeemError.message }, 500);
 
     const result = (outcome || {}) as { status?: string; label?: string; claimed_at?: string };
-    if (result.status === "granted") return Response.json({ ok: true, label: result.label });
+    if (result.status === "granted") return json({ ok: true, label: result.label });
     if (result.status === "spent") {
-      return Response.json({
+      return json({
         error: "That passcode has already been used on another device. Ask for a new one.",
         claimed_at: result.claimed_at ?? null,
-      }, { status: 403 });
+      }, 403);
     }
-    if (result.status === "expired") return Response.json({ error: "That passcode has expired." }, { status: 403 });
-    if (result.status === "revoked") return Response.json({ error: "That passcode was cancelled." }, { status: 403 });
-    return Response.json({ error: "That passcode is not valid." }, { status: 403 });
+    if (result.status === "expired") return json({ error: "That passcode has expired." }, 403);
+    if (result.status === "revoked") return json({ error: "That passcode was cancelled." }, 403);
+    return json({ error: "That passcode is not valid." }, 403);
   }
 
-  return Response.json({ error: `unknown action: ${action}` }, { status: 400 });
+  return json({ error: `unknown action: ${action}` }, 400);
 });

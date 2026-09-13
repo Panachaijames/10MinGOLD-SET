@@ -200,6 +200,10 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .chart-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .passcode-divider { margin-top: 18px; color: var(--muted); font-size: .75rem; }
 .access-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); font: .72rem "DM Mono", monospace; }
+.lang-toggle { display: inline-flex; gap: 2px; margin-left: 10px; border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+.lang-toggle button { background: transparent; border: 0; color: var(--muted); font: 600 .66rem "DM Mono", monospace; padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+.lang-toggle button.active { color: var(--mint); background: rgba(113,225,193,.12); }
+.field-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); white-space: nowrap; }
 .access-row .grow { flex: 1; min-width: 120px; }
 .access-row .muted { color: var(--muted); }
 .issued-code { display: block; margin: 12px 0; padding: 14px; border: 1px dashed rgba(113,225,193,.45); border-radius: 12px; background: rgba(113,225,193,.08); color: var(--mint); font: 600 1.1rem "DM Mono", monospace; letter-spacing: .12em; text-align: center; }

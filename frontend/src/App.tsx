@@ -4,6 +4,7 @@ import { AlertRecord, CandleSeries, PublicConfig, SetTickerState, StatusResponse
 import { createBackend } from "./backend";
 import { CandleChart, DEFAULT_INDICATORS, INDICATORS, orderIndicators, type IndicatorKey } from "./charts";
 import type { AccessCode, AccessMember } from "./backend";
+import { t, useLang } from "./i18n";
 
 const backend = createBackend();
 const BITCOIN_SYMBOL = "BINANCE:BTCUSDT";
@@ -98,7 +99,7 @@ function TimeframeCard({ value }: { value: TimeframeState }) {
     <article className="timeframe-card">
       <div className="card-heading">
         <div>
-          <span className="eyebrow">Confirmed candle</span>
+          <span className="eyebrow">{t("Confirmed candle")}</span>
           <h2>M{value.timeframe_minutes}</h2>
         </div>
         <span className={`trend-chip ${positive ? "positive" : "negative"}`}>
@@ -108,8 +109,8 @@ function TimeframeCard({ value }: { value: TimeframeState }) {
       <div className="price">{value.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
       <div className="indicator-grid">
         <div><span>MACD</span><strong>{value.macd.toFixed(4)}</strong></div>
-        <div><span>Signal</span><strong>{value.signal.toFixed(4)}</strong></div>
-        <div><span>Histogram</span><strong className={positive ? "mint" : "coral"}>{value.histogram.toFixed(4)}</strong></div>
+        <div><span>{t("Signal")}</span><strong>{value.signal.toFixed(4)}</strong></div>
+        <div><span>{t("Histogram")}</span><strong className={positive ? "mint" : "coral"}>{value.histogram.toFixed(4)}</strong></div>
       </div>
       <div className="card-footer">
         <span>Closed {formatTime(value.bar_close, true)}{value.provisional ? " · by clock" : ""}</span>
@@ -184,23 +185,23 @@ function ShareAppDialog({ open, onClose }: ShareAppDialogProps) {
   return (
     <div className="share-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section id="share-app-dialog" className="share-dialog panel" role="dialog" aria-modal="true" aria-labelledby="share-app-title">
-        <button className="share-close" type="button" onClick={onClose} aria-label="Close QR code" autoFocus>×</button>
-        <span className="eyebrow">Open on another device</span>
-        <h2 id="share-app-title">Scan to open Aurum Signal</h2>
+        <button className="share-close" type="button" onClick={onClose} aria-label={t("Close QR code")} autoFocus>×</button>
+        <span className="eyebrow">{t("Open on another device")}</span>
+        <h2 id="share-app-title">{t("Scan to open Aurum Signal")}</h2>
         <p>The QR opens this web app. Then install it from your phone browser to give it its own Home Screen icon.</p>
         <div className="qr-frame">
-          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt={`QR code for ${appUrl}`} /> : <span>Generating QR…</span>}
+          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt={`QR code for ${appUrl}`} /> : <span>{t("Generating QR…")}</span>}
         </div>
         <code className="share-url">{appUrl}</code>
         {localOnly && <p className="share-warning">This preview points to this computer only. Deploy to Vercel first; the QR will automatically use the final Vercel address.</p>}
         <div className="share-actions">
           <button className="primary" type="button" onClick={shareOrCopy}>{canShare ? "Share link" : "Copy link"}</button>
-          <button className="ghost" type="button" onClick={onClose}>Done</button>
+          <button className="ghost" type="button" onClick={onClose}>{t("Done")}</button>
         </div>
         <ol className="install-steps">
-          <li><strong>Android:</strong> open in Chrome, then tap Install app or Add to Home screen.</li>
+          <li><strong>{t("Android:")}</strong> open in Chrome, then tap Install app or Add to Home screen.</li>
           <li><strong>iPhone/iPad:</strong> open in Safari, tap Share, then Add to Home Screen.</li>
-          <li>Open the installed icon, sign in, and tap Enable notifications.</li>
+          <li>{t("Open the installed icon, sign in, and tap Enable notifications.")}</li>
         </ol>
         {feedback && <div className="share-feedback" role="status">{feedback}</div>}
       </section>
@@ -250,12 +251,12 @@ function LineBotDialog({ open, onClose, config, onSendTest, loading }: LineBotDi
   return (
     <div className="share-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="share-dialog panel" role="dialog" aria-modal="true" aria-labelledby="line-bot-title">
-        <button className="share-close" type="button" onClick={onClose} aria-label="Close" autoFocus>×</button>
-        <span className="eyebrow" style={{ color: "#06c755" }}>LINE Messaging API</span>
-        <h2 id="line-bot-title">Add Aurum Signal Bot</h2>
-        <p>Scan this QR code with your phone or tap the button to add the bot on LINE.</p>
+        <button className="share-close" type="button" onClick={onClose} aria-label={t("Close")} autoFocus>×</button>
+        <span className="eyebrow" style={{ color: "#06c755" }}>{t("LINE Messaging API")}</span>
+        <h2 id="line-bot-title">{t("Add Aurum Signal Bot")}</h2>
+        <p>{t("Scan this QR code with your phone or tap the button to add the bot on LINE.")}</p>
         <div className="qr-frame">
-          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt="LINE Bot QR code" /> : <span>Generating QR…</span>}
+          {qrDataUrl ? <img src={qrDataUrl} width="224" height="224" alt="LINE Bot QR code" /> : <span>{t("Generating QR…")}</span>}
         </div>
         {config?.line_bot_id && <code className="share-url">LINE Basic ID: {config.line_bot_id}</code>}
         <div className="share-actions">
@@ -265,17 +266,15 @@ function LineBotDialog({ open, onClose, config, onSendTest, loading }: LineBotDi
             target="_blank"
             rel="noopener noreferrer"
             style={{ textDecoration: "none", textAlign: "center", display: "inline-block", background: "#06c755", borderColor: "#06c755", color: "#fff" }}
-          >
-            Open in LINE
-          </a>
+          >{t("Open in LINE")}</a>
           <button className="ghost" type="button" disabled={loading} onClick={onSendTest}>
-            {loading ? "Sending…" : "Test LINE Alert"}
+            {loading ? t("Sending…") : t("Test LINE Alert")}
           </button>
         </div>
         <ol className="install-steps">
-          <li>Scan the QR code with your LINE app or tap <strong>Open in LINE</strong>.</li>
-          <li>Tap <strong>Add Friend</strong> to start receiving alerts.</li>
-          <li>Tap <strong>Test LINE Alert</strong> above to verify notifications on your phone!</li>
+          <li>{t("Scan the QR code with your LINE app or tap")}<strong>{t("Open in LINE")}</strong>.</li>
+          <li>{t("Tap")}<strong>{t("Add Friend")}</strong> to start receiving alerts.</li>
+          <li>{t("Tap")}<strong>{t("Test LINE Alert")}</strong> above to verify notifications on your phone!</li>
         </ol>
       </section>
     </div>
@@ -297,6 +296,7 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [passwordDraft, setPasswordDraft] = useState("");
+  const { lang, setLang } = useLang();
   const [passcodeDraft, setPasscodeDraft] = useState("");
   const [isOwner, setIsOwner] = useState(false);
   const [access, setAccess] = useState<{ codes: AccessCode[]; members: AccessMember[] }>({ codes: [], members: [] });
@@ -781,8 +781,8 @@ export default function App() {
     if (!instrument || (backend.kind === "legacy" && instrument.kind !== "gold")) {
       return (
         <div className="empty-state compact">
-          <strong>This chart is not available on the local backend</strong>
-          <p>Choose a gold timeframe, or open the Supabase deployment for SET and Bitcoin.</p>
+          <strong>{t("This chart is not available on the local backend")}</strong>
+          <p>{t("Choose a gold timeframe, or open the Supabase deployment for SET and Bitcoin.")}</p>
         </div>
       );
     }
@@ -829,28 +829,41 @@ export default function App() {
       <header className="topbar">
         <div className="brand-mark"><span /></div>
         <div className="brand-copy">
-          <span>Aurum Signal</span>
-          <small>Confirmed MACD watcher</small>
+          <span>{t("Aurum Signal")}</span>
+          <small>{t("Confirmed MACD watcher")}</small>
         </div>
         <div className={`connection-pill ${connected && feedFresh ? "connected" : ""}`}>
-          <StatusDot live={connected && feedFresh} /> {connected ? (feedFresh ? "Live" : "Market paused") : "Offline"}
+          <StatusDot live={connected && feedFresh} /> {connected ? (feedFresh ? t("Live") : t("Market paused")) : t("Offline")}
+        </div>
+        <div className="lang-toggle" role="group" aria-label="Language">
+          {(["en", "th"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={option === lang ? "active" : ""}
+              aria-pressed={option === lang}
+              onClick={() => setLang(option)}
+            >
+              {option === "en" ? "EN" : "ไทย"}
+            </button>
+          ))}
         </div>
       </header>
 
       {authed === false && (
         <section className="onboarding panel">
-          <span className="eyebrow">Private access</span>
-          <h1>Connect your watcher</h1>
+          <span className="eyebrow">{t("Private access")}</span>
+          <h1>{t("Connect your watcher")}</h1>
           {backend.kind === "supabase" ? (
             <>
-              <p>Sign in with the watcher account created in Supabase Auth.</p>
+              <p>{t("Sign in with the watcher account created in Supabase Auth.")}</p>
               <form onSubmit={signIn}>
                 <input
                   type="email"
                   autoComplete="username"
                   value={emailDraft}
                   onChange={(event) => setEmailDraft(event.target.value)}
-                  placeholder="Email"
+                  placeholder={t("Email")}
                   required
                 />
                 <input
@@ -858,14 +871,14 @@ export default function App() {
                   autoComplete="current-password"
                   value={passwordDraft}
                   onChange={(event) => setPasswordDraft(event.target.value)}
-                  placeholder="Password"
+                  placeholder={t("Password")}
                   required
                 />
-                <button className="primary" type="submit" disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button>
+                <button className="primary" type="submit" disabled={loading}>{loading ? t("Signing in…") : t("Sign in")}</button>
               </form>
               {backend.redeemPasscode && (
                 <>
-                  <p className="passcode-divider">Or enter a passcode the owner gave you.</p>
+                  <p className="passcode-divider">{t("Or enter a passcode the owner gave you.")}</p>
                   <form onSubmit={redeemPasscode}>
                     <input
                       autoComplete="one-time-code"
@@ -873,27 +886,27 @@ export default function App() {
                       value={passcodeDraft}
                       onChange={(event) => setPasscodeDraft(event.target.value.toUpperCase())}
                       placeholder="XXXX-XXXX-XXXX"
-                      aria-label="Passcode"
+                      aria-label={t("Passcode")}
                       required
                     />
-                    <button className="ghost" type="submit" disabled={loading}>{loading ? "Checking…" : "Use passcode"}</button>
+                    <button className="ghost" type="submit" disabled={loading}>{loading ? t("Checking…") : t("Use passcode")}</button>
                   </form>
                 </>
               )}
             </>
           ) : (
             <>
-              <p>Enter the same <code>APP_TOKEN</code> stored in the PC’s <code>.env</code> file.</p>
+              <p>{t("Enter the same")}<code>APP_TOKEN</code> stored in the PC’s <code>.env</code> file.</p>
               <form onSubmit={signIn}>
                 <input
                   type="password"
                   autoComplete="current-password"
                   value={tokenDraft}
                   onChange={(event) => setTokenDraft(event.target.value)}
-                  placeholder="App token"
+                  placeholder={t("App token")}
                   required
                 />
-                <button className="primary" type="submit" disabled={loading}>Connect</button>
+                <button className="primary" type="submit" disabled={loading}>{t("Connect")}</button>
               </form>
             </>
           )}
@@ -905,9 +918,7 @@ export default function App() {
             aria-controls="share-app-dialog"
             aria-expanded={shareOpen}
             onClick={() => setShareOpen(true)}
-          >
-            Open on phone (QR)
-          </button>
+          >{t("Open on phone (QR)")}</button>
         </section>
       )}
 
@@ -916,11 +927,11 @@ export default function App() {
           <section className="hero">
             <div>
               <span className="eyebrow">{goldSymbol} · MT5</span>
-              <h1>Watching the close.</h1>
-              <p>Alerts fire only after a candle is complete, so the signal does not repaint.</p>
+              <h1>{t("Watching the close.")}</h1>
+              <p>{t("Alerts fire only after a candle is complete, so the signal does not repaint.")}</p>
             </div>
             <div className="hero-stat">
-              <span>Polling</span>
+              <span>{t("Polling")}</span>
               <strong>{config ? `${config.poll_interval_ms} ms` : "—"}</strong>
               <small>{backend.kind === "supabase" ? "Cloud fan-out via Supabase" : "React adds no watcher delay"}</small>
             </div>
@@ -929,7 +940,7 @@ export default function App() {
           {(error || notice) && (
             <div className={`message ${error ? "error" : "success"}`}>
               <span>{error || notice}</span>
-              <button onClick={() => { setError(""); setNotice(""); }} aria-label="Dismiss">×</button>
+              <button onClick={() => { setError(""); setNotice(""); }} aria-label={t("Dismiss")}>×</button>
             </div>
           )}
 
@@ -946,7 +957,9 @@ export default function App() {
               </div>
             </div>
             <div className="button-row">
-              {config?.line_configured && (
+              {/* LINE has one recipient, the owner's own account, so a guest pressing Test LINE
+                  would message the owner's phone rather than their own. Owner only. */}
+              {config?.line_configured && isOwner && (
                 <>
                   <button
                     className="primary"
@@ -956,8 +969,8 @@ export default function App() {
                   >
                     + Add LINE Bot
                   </button>
-                  <button className="ghost" disabled={loading} onClick={sendLineTest} title="Test LINE Messaging API notification">
-                    {loading ? "Testing…" : "Test LINE"}
+                  <button className="ghost" disabled={loading} onClick={sendLineTest} title={t("Test LINE Messaging API notification")}>
+                    {loading ? t("Testing…") : t("Test LINE")}
                   </button>
                 </>
               )}
@@ -968,18 +981,16 @@ export default function App() {
                 aria-controls="share-app-dialog"
                 aria-expanded={shareOpen}
                 onClick={() => setShareOpen(true)}
-              >
-                Phone QR
-              </button>
-              {!standalone && <button className="ghost" onClick={install}>Install app</button>}
+              >{t("Phone QR")}</button>
+              {!standalone && <button className="ghost" onClick={install}>{t("Install app")}</button>}
               {pushEnabled ? (
                 <>
-                  <button className="ghost" disabled={loading} onClick={sendTest}>Browser test</button>
-                  <button className="quiet" disabled={loading} onClick={disableNotifications}>Mute web</button>
+                  <button className="ghost" disabled={loading} onClick={sendTest}>{t("Browser test")}</button>
+                  <button className="quiet" disabled={loading} onClick={disableNotifications}>{t("Mute web")}</button>
                 </>
               ) : (
-                <button className={config?.line_configured ? "ghost" : "primary"} disabled={loading} onClick={enableNotifications} title="Optional: receive browser notifications on this PC">
-                  {loading ? "Connecting…" : (config?.line_configured ? "+ Browser push" : "Enable notifications")}
+                <button className={config?.line_configured ? "ghost" : "primary"} disabled={loading} onClick={enableNotifications} title={t("Optional: receive browser notifications on this PC")}>
+                  {loading ? t("Connecting…") : (config?.line_configured ? `+ ${t("Browser push")}` : t("Enable notifications"))}
                 </button>
               )}
             </div>
@@ -988,7 +999,7 @@ export default function App() {
           {isOwner && (
             <>
               <div className="section-title">
-                <div><span className="eyebrow">Access</span><h2>Passcodes</h2></div>
+                <div><span className="eyebrow">{t("Access")}</span><h2>{t("Passcodes")}</h2></div>
               </div>
               <section className="panel diagnostics">
                 {accessError && <div className="message error"><span>{accessError}</span></div>}
@@ -998,16 +1009,16 @@ export default function App() {
                   their own device; only this account can change settings or issue codes.
                 </p>
                 <form onSubmit={issuePasscode} className="access-row">
-                  <input className="grow" value={codeLabel} onChange={(e) => setCodeLabel(e.target.value)} placeholder="Who is it for?" aria-label="Passcode label" />
-                  <input type="number" min={0} max={365} value={codeDays} onChange={(e) => setCodeDays(Number(e.target.value))} aria-label="Expires in days" style={{ width: 84 }} />
-                  <button className="primary" type="submit">Generate</button>
+                  <input className="grow" value={codeLabel} onChange={(e) => setCodeLabel(e.target.value)} placeholder={t("Who is it for?")} aria-label={t("Passcode label")} />
+                  <label className="field-inline">{t("Expires in")}<input type="number" min={0} max={365} value={codeDays} onChange={(e) => setCodeDays(Number(e.target.value))} style={{ width: 64 }} />
+                    days{codeDays === 0 ? " (never)" : ""}
+                  </label>
+                  <button className="primary" type="submit">{t("Generate")}</button>
                 </form>
                 {issuedCode && (
                   <>
                     <code className="issued-code">{issuedCode}</code>
-                    <p className="chart-legend-note" style={{ marginLeft: 0 }}>
-                      Copy it now. Only its hash is stored, so it cannot be shown again.
-                    </p>
+                    <p className="chart-legend-note" style={{ marginLeft: 0 }}>{t("Copy it now. Only its hash is stored, so it cannot be shown again.")}</p>
                   </>
                 )}
                 {access.codes.map((code) => {
@@ -1017,20 +1028,20 @@ export default function App() {
                   return (
                     <div className="access-row" key={code.id}>
                       <span className="grow">{code.label}</span>
-                      <span className="muted">{code.claimed_at ? `claimed ${formatTime(code.claimed_at, false)}` : "unclaimed"}</span>
+                      <span className="muted">{code.claimed_at ? `${t("claimed")} ${formatTime(code.claimed_at, false)}` : t("unclaimed")}</span>
                       <span className="muted">
-                        {code.revoked_at ? "cancelled" : expired ? "expired" : spent ? "used up" : code.expires_at ? `until ${formatTime(code.expires_at, false)}` : "no expiry"}
+                        {code.revoked_at ? t("cancelled") : expired ? t("expired") : spent ? t("used up") : code.expires_at ? `${t("until")} ${formatTime(code.expires_at, false)}` : t("no expiry")}
                       </span>
-                      {!dead && <button className="ghost" onClick={() => void revoke({ codeId: code.id })}>Revoke</button>}
+                      {!dead && <button className="ghost" onClick={() => void revoke({ codeId: code.id })}>{t("Revoke")}</button>}
                     </div>
                   );
                 })}
                 {access.members.filter((member) => !member.is_owner).map((member) => (
                   <div className="access-row" key={member.user_id}>
                     <span className="grow">{member.label}</span>
-                    <span className="muted">joined {formatTime(member.granted_at, false)}</span>
-                    <span className="muted">{member.revoked_at ? "revoked" : "active"}</span>
-                    {!member.revoked_at && <button className="ghost" onClick={() => void revoke({ memberId: member.user_id })}>Remove</button>}
+                    <span className="muted">{t("joined")} {formatTime(member.granted_at, false)}</span>
+                    <span className="muted">{member.revoked_at ? t("revoked") : t("active")}</span>
+                    {!member.revoked_at && <button className="ghost" onClick={() => void revoke({ memberId: member.user_id })}>{t("Remove")}</button>}
                   </div>
                 ))}
               </section>
@@ -1040,19 +1051,19 @@ export default function App() {
           {cloud && (
           <section className="diagnostics panel">
               <div>
-                <span className="eyebrow">Cloud health</span>
-                <h2>Heartbeats</h2>
+                <span className="eyebrow">{t("Cloud health")}</span>
+                <h2>{t("Heartbeats")}</h2>
               </div>
               <div className="diagnostic-metrics">
-                <div><span>Laptop watcher</span><strong>{formatAgo(cloud.gold_last_seen, clock)}</strong></div>
+                <div><span>{t("Laptop watcher")}</span><strong>{formatAgo(cloud.gold_last_seen, clock)}</strong></div>
                 {cloud.gold_cloud_last_seen && (
-                  <div><span>Cloud failover</span><strong>{formatAgo(cloud.gold_cloud_last_seen, clock)}</strong></div>
+                  <div><span>{t("Cloud failover")}</span><strong>{formatAgo(cloud.gold_cloud_last_seen, clock)}</strong></div>
                 )}
-                <div><span>SET scanner</span><strong>{formatAgo(cloud.set_last_seen, clock)}</strong></div>
+                <div><span>{t("SET scanner")}</span><strong>{formatAgo(cloud.set_last_seen, clock)}</strong></div>
                 {cloud.tv_webhook_last_seen && (
-                  <div><span>TradingView alert</span><strong>{formatAgo(cloud.tv_webhook_last_seen, clock)}</strong></div>
+                  <div><span>{t("TradingView alert")}</span><strong>{formatAgo(cloud.tv_webhook_last_seen, clock)}</strong></div>
                 )}
-                <div><span>Push fan-out</span><strong>{formatAgo(cloud.push_last_seen, clock)}</strong></div>
+                <div><span>{t("Push fan-out")}</span><strong>{formatAgo(cloud.push_last_seen, clock)}</strong></div>
               </div>
               <p>
                 {cloud.set_update_mode ? `SET feed: ${cloud.set_update_mode}` : "SET scanner has not run yet"}
@@ -1063,19 +1074,19 @@ export default function App() {
           )}
 
           <div className="section-title">
-            <div><span className="eyebrow">Live indicators</span><h2>Closed candles</h2></div>
+            <div><span className="eyebrow">{t("Live indicators")}</span><h2>{t("Closed candles")}</h2></div>
             <span className="last-sync">Updated {formatTime(status?.watcher.last_poll_at, true)}</span>
           </div>
           <section className="card-grid">
             {cards.length ? cards.map((card) => <TimeframeCard key={card.timeframe_minutes} value={card} />) : (
-              <div className="empty panel">Waiting for the first MT5 candle snapshot…</div>
+              <div className="empty panel">{t("Waiting for the first MT5 candle snapshot…")}</div>
             )}
           </section>
 
           <div className="section-title">
-            <div><span className="eyebrow">Chart</span><h2>MACD 12 / 26 / 9 · RSI 14</h2></div>
+            <div><span className="eyebrow">{t("Chart")}</span><h2>MACD 12 / 26 / 9 · RSI 14</h2></div>
             <div className="chart-controls">
-              <div className="tabs" role="group" aria-label="Chart layout">
+              <div className="tabs" role="group" aria-label={t("Chart layout")}>
                 {[1, 2, 4].map((count) => (
                   <button
                     key={count}
@@ -1087,15 +1098,15 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <button className="ghost" onClick={toggleExpanded}>{expanded ? "Exit full screen" : "Full screen"}</button>
+              <button className="ghost" onClick={toggleExpanded}>{expanded ? t("Exit full screen") : t("Full screen")}</button>
             </div>
           </div>
           <section className={`panel chart-panel${expanded ? " expanded" : ""}`} ref={chartPanel}>
             {chartError && <div className="message error"><span>Chart data: {chartError}</span></div>}
             {expanded && (
-              <button className="ghost expanded-close" onClick={toggleExpanded} aria-label="Exit full screen">Close</button>
+              <button className="ghost expanded-close" onClick={toggleExpanded} aria-label={t("Exit full screen")}>{t("Close")}</button>
             )}
-            <div className="indicator-picker" role="group" aria-label="Indicators">
+            <div className="indicator-picker" role="group" aria-label={t("Indicators")}>
               {INDICATORS.map((indicator) => {
                 const on = indicators.includes(indicator.key);
                 return (
@@ -1151,13 +1162,13 @@ export default function App() {
           {backend.kind === "supabase" && (
             <>
               <div className="section-title">
-                <div><span className="eyebrow">SET stocks · 15m · TradingView (15-min delayed)</span><h2>MACD by ticker</h2></div>
+                <div><span className="eyebrow">{t("SET stocks · 15m · TradingView (15-min delayed)")}</span><h2>{t("MACD by ticker")}</h2></div>
               </div>
               <section className="panel">
                 {setPanelError && <div className="message error"><span>SET data: {setPanelError}</span></div>}
                 <table className="set-table">
                   <thead>
-                    <tr><th>Ticker</th><th>MACD</th><th>Signal</th><th>Hist</th><th>Last closed bar</th><th>Feed</th></tr>
+                    <tr><th>{t("Ticker")}</th><th>MACD</th><th>{t("Signal")}</th><th>{t("Hist")}</th><th>{t("Last closed bar")}</th><th>{t("Feed")}</th></tr>
                   </thead>
                   <tbody>
                     {setTickers.length === 0 ? (
@@ -1182,7 +1193,7 @@ export default function App() {
                   <div className="set-detail-chart">
                     <div className="set-detail-heading">
                       <strong>{selectedSet.replace(/^SET:/, "")} · M15 candlesticks</strong>
-                      <span>Closed bars · TradingView, delayed 15 minutes</span>
+                      <span>{t("Closed bars · TradingView, delayed 15 minutes")}</span>
                     </div>
                     {candleSeries[candleSeriesKey(selectedSet, 15)]?.candles.length ? (
                       <CandleChart
@@ -1196,7 +1207,7 @@ export default function App() {
                     ) : (
                       <div className="empty-state compact">
                         <strong>No stored candlesticks for {selectedSet.replace(/^SET:/, "")} yet</strong>
-                        <p>The cloud scanner will populate this chart with closed, delayed M15 bars.</p>
+                        <p>{t("The cloud scanner will populate this chart with closed, delayed M15 bars.")}</p>
                       </div>
                     )}
                   </div>
@@ -1207,25 +1218,25 @@ export default function App() {
 
           <section className="diagnostics panel">
             <div>
-              <span className="eyebrow">Measured delivery</span>
-              <h2>Latency diagnostics</h2>
+              <span className="eyebrow">{t("Measured delivery")}</span>
+              <h2>{t("Latency diagnostics")}</h2>
             </div>
             <div className="diagnostic-metrics">
-              <div><span>Median</span><strong>{formatLatency(status?.latency.p50_ms)}</strong></div>
-              <div><span>95th percentile</span><strong>{formatLatency(status?.latency.p95_ms)}</strong></div>
-              <div><span>Samples</span><strong>{status?.latency.samples ?? 0}</strong></div>
+              <div><span>{t("Median")}</span><strong>{formatLatency(status?.latency.p50_ms)}</strong></div>
+              <div><span>{t("95th percentile")}</span><strong>{formatLatency(status?.latency.p95_ms)}</strong></div>
+              <div><span>{t("Samples")}</span><strong>{status?.latency.samples ?? 0}</strong></div>
             </div>
-            <p>Measured from the scheduled candle close to receipt by the device service worker.</p>
+            <p>{t("Measured from the scheduled candle close to receipt by the device service worker.")}</p>
           </section>
 
           <div className="section-title history-heading">
-            <div><span className="eyebrow">Audit trail</span><h2>Alert history</h2></div>
+            <div><span className="eyebrow">{t("Audit trail")}</span><h2>{t("Alert history")}</h2></div>
           </div>
           <section className="history panel">
             {alerts.length === 0 ? (
               <div className="empty-state">
                 <span className="empty-ring" />
-                <strong>No confirmed crossovers yet</strong>
+                <strong>{t("No confirmed crossovers yet")}</strong>
                 <p>Watching {(status?.watcher.directions || ["bullish", "bearish"]).join(" and ")} crosses. The watcher seeds the current candle on first start and will not send an old signal.</p>
               </div>
             ) : alerts.map((alert) => (
@@ -1251,7 +1262,7 @@ export default function App() {
 
           <footer>
             <span>Alert-only · No trading permissions · {backend.kind === "supabase" ? "Supabase" : "Local"} backend · build {__APP_VERSION__}</span>
-            <button onClick={signOut}>{backend.kind === "supabase" ? "Sign out" : "Change token"}</button>
+            <button onClick={signOut}>{backend.kind === "supabase" ? t("Sign out") : t("Change token")}</button>
           </footer>
         </>
       )}

@@ -1,4 +1,4 @@
-const CACHE_NAME = "aurum-signal-v2";
+const CACHE_NAME = "aurum-signal-v3";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png"];
 
 self.addEventListener("install", (event) => {
@@ -35,17 +35,31 @@ self.addEventListener("fetch", (event) => {
 function showFromPayload(payload) {
   const declarative = payload.notification || {};
   const title = declarative.title || payload.title || "Aurum Signal";
+  // A trading signal is worth more than a passive toast. requireInteraction keeps it on screen
+  // until it is acknowledged rather than fading after a few seconds, and the vibration pattern
+  // differs by direction so a pocket buzz alone tells you which way the cross went.
+  const direction = payload.direction || declarative.direction;
+  const bullish = direction === "bullish";
+  const system = direction === "info" || payload.source === "system";
   const options = {
     body: declarative.body || payload.body || "New MACD alert",
     icon: "/icons/icon-192.png",
     badge: "/icons/badge-96.png",
     tag: declarative.tag || payload.tag || payload.eventId || payload.deliveryId || "aurum-signal",
     renotify: true,
+    requireInteraction: !system,
+    silent: false,
+    timestamp: Date.parse(payload.barClose || payload.detectedAt || "") || Date.now(),
+    vibrate: system ? [120, 80, 120] : bullish ? [220, 90, 220, 90, 420] : [420, 90, 220, 90, 220],
+    actions: system ? [] : [
+      { action: "open", title: "Open chart" },
+      { action: "dismiss", title: "Dismiss" }
+    ],
     data: {
       url: declarative.navigate || payload.url || "/",
       eventId: payload.eventId,
       deliveryId: payload.deliveryId,
-      direction: payload.direction
+      direction: direction
     }
   };
   // A push that does not end in a visible notification gets the subscription revoked on iOS,
@@ -103,6 +117,8 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  // "Dismiss" should close the notification without dragging the app to the foreground.
+  if (event.action === "dismiss") return;
   const destination = event.notification.data?.url || "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
