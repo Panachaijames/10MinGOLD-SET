@@ -213,10 +213,10 @@ deduplication and synchronization contract.
 
    ```powershell
    npx supabase@2.116.0 secrets set VAPID_KEYS_JWK='{"publicKey":{...},"privateKey":{...}}' VAPID_SUBJECT=mailto:you@example.com PUBLIC_APP_URL=https://<your-app>/
-   npx supabase@2.116.0 functions deploy push-fanout set-scan push-receipt gold-scan
+   npx supabase@2.116.0 functions deploy push-fanout set-scan push-receipt gold-scan tv-webhook
    ```
 
-   `verify_jwt = false` for all four is already in `supabase/config.toml`; the functions check the
+   `verify_jwt = false` for all five is already in `supabase/config.toml`; the functions check the
    secret key (cron, trigger, laptop) or the user JWT (PWA "Send test") themselves. `gold-scan`
    also needs the cloud feed key: `npx supabase@2.116.0 secrets set TWELVEDATA_API_KEY=...`.
 
@@ -241,11 +241,35 @@ deduplication and synchronization contract.
    `python scripts/sync_history.py` (preview) and `python scripts/sync_history.py --apply`. The
    command refuses to run when an enabled cloud subscription could receive old alerts.
 
-6. **SET stocks.** Edit `settings.set_tickers`, leave `set_scan_dry_run = true` for two sessions and
-   read `heartbeats.set_tv.details` / `set_state` to confirm `update_mode`, the 900 s lag and bar
-   timestamps, then set `set_scan_dry_run = false` and `set_scan_enabled = true`. The cron job
-   `aurum-set-scan` polls at :01/:16/:31/:46/:56 UTC inside SET sessions only (gate in
-   `ops.set_scan_gate()`), and `set_holidays` is editable from SQL.
+6. **SET stocks, real time via TradingView alerts.** The scanner endpoint `set-scan` polls is
+   anonymous, so it serves 15-minute delayed data whatever the account pays for. Real-time SET
+   needs a TradingView plan that can fire webhooks (Essential, $12.95/month billed annually) plus
+   the exchange's own real-time add-on ($2.00/month for non-professionals, bought under Account >
+   Market data). Alerts then fire from your own session at the candle close and post to
+   `tv-webhook`, which writes the same alert row `set-scan` would have written.
+
+   ```powershell
+   npx supabase@2.116.0 secrets set TV_WEBHOOK_SECRET=<a long random string>
+   ```
+
+   Paste [docs/aurum-macd-alert.pine](docs/aurum-macd-alert.pine) into the Pine Editor, add it to
+   the chart, put the same secret in its "Webhook secret" input, then create one alert per symbol
+   per timeframe: condition **Aurum Signal MACD > Any alert() function call**, and under
+   Notifications tick **Webhook URL** with
+   `https://<ref>.supabase.co/functions/v1/tv-webhook`. Two-factor authentication must be enabled
+   on the TradingView account or webhooks are refused. One alert covers both directions, so five
+   symbols on M10 and M15 costs ten of Essential's twenty technical alerts.
+
+   The cron job `aurum-set-scan` keeps running with `set_scan_dry_run = true`: it still fills
+   `set_macd_history` for the PWA's SET chart and `set_state`, but no longer raises alerts. Both
+   producers build the same alert id for a given bar, so if you ever turn the webhook off and set
+   `set_scan_dry_run = false`, alerting falls back to the delayed scanner with no duplicates in
+   between. `set_holidays` is editable from SQL.
+
+   Checks: `heartbeats.set_tv_webhook` updates on every alert received and shows
+   `detection_delay_ms`; the PWA's Cloud health panel shows it as "TradingView alert". The
+   watchdog raises a system alert if no webhook arrives for three days during SET sessions, which
+   is the symptom of an expired alert or a changed webhook URL.
 
 7. **Gold cloud failover.** `gold-scan` keeps alerts arriving while the laptop and MT5 are off.
    `ops.gold_scan_gate()` only posts to the function when `heartbeats.gold_mt5` has been quiet for

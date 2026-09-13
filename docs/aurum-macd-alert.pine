@@ -1,0 +1,68 @@
+// Aurum Signal — MACD crossover alert for the tv-webhook Edge Function.
+//
+// One alert per symbol per timeframe covers BOTH directions, so five SET stocks on M10 and M15
+// costs ten of the twenty technical alerts an Essential plan allows.
+//
+// Cross rule matches the Python watcher and the cloud scanner exactly: the histogram crossing
+// zero, where a touch counts as the side it is leaving (previous <= 0 and current > 0 is
+// bullish). Pine's ta.crossover(hist, 0) is precisely that test.
+//
+// SETUP
+//  1. Chart > Pine Editor > paste this > Save > "Add to chart".
+//  2. Open the indicator settings and paste your webhook secret into "Webhook secret".
+//  3. Set the chart interval to 10 or 15 minutes. For 10, type 10 into the interval box to
+//     create the custom interval.
+//  4. Right-click the chart > Add alert, then:
+//       Condition: Aurum Signal MACD  ->  Any alert() function call
+//       Expiration: open-ended if your plan allows, otherwise re-arm when it lapses
+//       Notifications tab: tick Webhook URL and paste
+//         https://<your-project-ref>.supabase.co/functions/v1/tv-webhook
+//       Alert name: anything, the message is built by this script
+//  5. Repeat per symbol and per timeframe. Two-factor authentication must be on for the
+//     account or TradingView refuses to send webhooks at all.
+//
+// The message is JSON, so TradingView sends it with an application/json content type.
+
+//@version=5
+indicator("Aurum Signal MACD", overlay = false, precision = 4)
+
+fastLength   = input.int(12, "Fast length",   minval = 1)
+slowLength   = input.int(26, "Slow length",   minval = 1)
+signalLength = input.int(9,  "Signal length", minval = 1)
+secret       = input.string("", "Webhook secret", confirm = true,
+     tooltip = "The value of TV_WEBHOOK_SECRET set on the Supabase function. Leave blank if you put ?token=... on the webhook URL instead.")
+
+[macdLine, signalLine, histLine] = ta.macd(close, fastLength, slowLength, signalLength)
+
+plot(histLine, "Histogram", color = histLine >= 0 ? color.new(color.teal, 40) : color.new(color.red, 40), style = plot.style_columns)
+plot(macdLine,   "MACD",   color = color.new(#2962ff, 0))
+plot(signalLine, "Signal", color = color.new(#ff6d00, 0))
+hline(0, "Zero", color = color.new(color.gray, 60))
+
+bullish = ta.crossover(histLine, 0)
+bearish = ta.crossunder(histLine, 0)
+
+// Numbers are formatted explicitly so no value ever reaches the webhook in scientific notation,
+// which would not parse as JSON on the other end.
+fmt(value) => str.tostring(value, "#.##########")
+
+message(direction) =>
+    '{"secret":"' + secret +
+      '","symbol":"' + syminfo.prefix + ":" + syminfo.ticker +
+      '","timeframe":"' + timeframe.period +
+      '","direction":"' + direction +
+      '","bar_time_ms":' + str.tostring(time) +
+      ',"price":' + fmt(close) +
+      ',"macd":' + fmt(macdLine) +
+      ',"signal":' + fmt(signalLine) +
+      ',"histogram":' + fmt(histLine) + '}'
+
+// freq_once_per_bar_close is what makes this a confirmed signal: the bar is final and the
+// values can no longer be revised.
+if bullish
+    alert(message("bullish"), alert.freq_once_per_bar_close)
+if bearish
+    alert(message("bearish"), alert.freq_once_per_bar_close)
+
+plotshape(bullish, "Bullish cross", shape.triangleup,   location.bottom, color.new(color.teal, 0), size = size.tiny)
+plotshape(bearish, "Bearish cross", shape.triangledown, location.top,    color.new(color.red, 0),  size = size.tiny)

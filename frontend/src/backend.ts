@@ -261,6 +261,7 @@ class SupabaseBackend implements Backend {
         gold_cloud_last_seen: heartbeats.gold_cloud?.last_seen ?? null,
         gold_cloud_dry_run: ((heartbeats.gold_cloud?.details || {}) as { dry_run?: boolean }).dry_run ?? null,
         set_last_seen: heartbeats.set_tv?.last_seen ?? null,
+        tv_webhook_last_seen: heartbeats.set_tv_webhook?.last_seen ?? null,
         set_update_mode: ((heartbeats.set_tv?.details || {}) as { update_mode?: string }).update_mode ?? null,
         set_dry_run: ((heartbeats.set_tv?.details || {}) as { dry_run?: boolean }).dry_run ?? null,
         push_last_seen: heartbeats.push_fanout?.last_seen ?? null

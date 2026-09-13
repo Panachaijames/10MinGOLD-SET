@@ -399,6 +399,11 @@ verify_jwt = false
 [functions.gold-scan]
 verify_jwt = false
 
+# TradingView cannot send a Supabase JWT or any custom header, so this one authenticates the
+# caller with its own shared secret (TV_WEBHOOK_SECRET) carried in the alert body.
+[functions.tv-webhook]
+verify_jwt = false
+
 [functions.push-receipt]
 verify_jwt = false
 

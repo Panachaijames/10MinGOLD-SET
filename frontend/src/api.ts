@@ -49,6 +49,7 @@ export interface StatusResponse {
     gold_cloud_last_seen: string | null;
     gold_cloud_dry_run: boolean | null;
     set_last_seen: string | null;
+    tv_webhook_last_seen: string | null;
     set_update_mode: string | null;
     set_dry_run: boolean | null;
     push_last_seen: string | null;

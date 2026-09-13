@@ -723,6 +723,9 @@ export default function App() {
                   <div><span>Cloud failover</span><strong>{formatAgo(cloud.gold_cloud_last_seen, clock)}</strong></div>
                 )}
                 <div><span>SET scanner</span><strong>{formatAgo(cloud.set_last_seen, clock)}</strong></div>
+                {cloud.tv_webhook_last_seen && (
+                  <div><span>TradingView alert</span><strong>{formatAgo(cloud.tv_webhook_last_seen, clock)}</strong></div>
+                )}
                 <div><span>Push fan-out</span><strong>{formatAgo(cloud.push_last_seen, clock)}</strong></div>
               </div>
               <p>
