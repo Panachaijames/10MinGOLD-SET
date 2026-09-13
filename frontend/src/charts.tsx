@@ -91,7 +91,14 @@ function useResize(container: RefObject<HTMLDivElement>, chart: MutableRefObject
   useEffect(() => {
     const element = container.current;
     if (!element) return;
-    const apply = () => chart.current?.applyOptions({ width: element.clientWidth });
+    // Height as well as width: in the chart grid and in fullscreen the cell decides the size,
+    // and a chart left at its creation height would overflow or leave a gap.
+    const apply = () => {
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      if (width > 0 && height > 0) chart.current?.applyOptions({ width, height });
+      else if (width > 0) chart.current?.applyOptions({ width });
+    };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(element);
@@ -105,11 +112,13 @@ interface CandleChartProps {
   symbol: string;
   timeframe: number;
   forming?: Candle | null;
+  /** How to describe the newest price when there is no forming candle. */
+  priceStatus?: "closed" | "delayed";
   height?: number;
 }
 
 /** Candlesticks on top, MACD (histogram + MACD + signal) below, alerts as arrows on the candles. */
-export function CandleChart({ candles, alerts, symbol, timeframe, forming, height = 560 }: CandleChartProps) {
+export function CandleChart({ candles, alerts, symbol, timeframe, forming, priceStatus = "closed", height = 560 }: CandleChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<{
@@ -161,9 +170,13 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
       chart.current = null;
       series.current = null;
     };
-  }, [height]);
+    // Deliberately NOT keyed on height: a layout change only resizes the cell, and tearing the
+    // chart down would drop every series (and the user's zoom) while the data effects below,
+    // whose inputs did not change, would never refill them.
+  }, []);
 
   useResize(container, chart);
+  useEffect(() => { chart.current?.applyOptions({ height }); }, [height]);
   const newestTime = useRef<string | null>(null);
 
   useEffect(() => {
@@ -244,6 +257,8 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
 
   const last = candles.length ? candles[candles.length - 1] : null;
   const livePrice = forming ? forming.close : last?.close;
+  const live = Boolean(forming);
+  const priceLabel = live ? "LIVE" : priceStatus === "delayed" ? "DELAYED CLOSE" : "CLOSED";
   const lastRsi = useMemo(() => {
     const values = wilderRsi(candles.map((c) => c.close), RSI_LENGTH);
     return values.length ? values[values.length - 1] : null;
@@ -253,8 +268,8 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
     <div className="chart-wrap">
       <div className="chart-legend">
         {livePrice != null && (
-          <span className="live-badge">
-            <span className="live-dot" /> LIVE {livePrice.toFixed(2)}
+          <span className={`price-badge ${live ? "live" : priceStatus}`}>
+            {live && <span className="live-dot" />} {priceLabel} {livePrice.toFixed(2)}
           </span>
         )}
         <span><i style={{ background: COLORS.macd }} /> MACD {last?.macd?.toFixed(4) ?? "—"}</span>
@@ -273,28 +288,53 @@ interface MacdChartProps {
   height?: number;
 }
 
-/** MACD-only chart for SET tickers (the free scanner gives no OHLC history). */
+/**
+ * Chart for SET tickers. The scanner gives no OHLC, so there are no candlesticks, but it does
+ * store the close of every bar it reads: that becomes a price line above the MACD pane, with
+ * RSI below once enough bars have accumulated.
+ */
 export function MacdChart({ points, height = 260 }: MacdChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
-  const series = useRef<{ hist: ISeriesApi<"Histogram">; macd: ISeriesApi<"Line">; signal: ISeriesApi<"Line"> } | null>(null);
+  const series = useRef<{
+    price: ISeriesApi<"Line">;
+    hist: ISeriesApi<"Histogram">;
+    macd: ISeriesApi<"Line">;
+    signal: ISeriesApi<"Line">;
+    rsi: ISeriesApi<"Line"> | null;
+  } | null>(null);
 
   useEffect(() => {
     if (!container.current) return;
     const api = createChart(container.current, baseOptions(height));
-    const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false });
-    const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
-    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } });
+    const price = api.addSeries(LineSeries, {
+      color: COLORS.up,
+      lineWidth: 2,
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 }
+    }, 0);
+    const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false }, 1);
+    const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
+    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
+    api.panes()[0]?.setStretchFactor(2);
+    api.panes()[1]?.setStretchFactor(1);
     chart.current = api;
-    series.current = { hist, macd, signal };
+    // The RSI pane is added only once enough closes exist: the scanner stores one point per
+    // closed bar, so a freshly enabled ticker has none and an empty pane would just look broken.
+    series.current = { price, hist, macd, signal, rsi: null };
     return () => {
       api.remove();
       chart.current = null;
       series.current = null;
     };
-  }, [height]);
+    // Deliberately NOT keyed on height: a layout change only resizes the cell, and tearing the
+    // chart down would drop every series (and the user's zoom) while the data effects below,
+    // whose inputs did not change, would never refill them.
+  }, []);
 
   useResize(container, chart);
+  useEffect(() => { chart.current?.applyOptions({ height }); }, [height]);
   const newestTime = useRef<string | null>(null);
 
   const sorted = useMemo(() => [...points].sort((a, b) => Date.parse(a.time) - Date.parse(b.time)), [points]);
@@ -302,9 +342,41 @@ export function MacdChart({ points, height = 260 }: MacdChartProps) {
   useEffect(() => {
     const current = series.current;
     if (!current) return;
+    current.price.setData(
+      sorted
+        .map((p) => ({ time: toChartTime(p.time), value: p.close }))
+        .filter((point): point is { time: UTCTimestamp; value: number } => point.value != null)
+    );
     current.hist.setData(sorted.map((p) => ({ time: toChartTime(p.time), value: p.histogram, color: p.histogram >= 0 ? "rgba(113,225,193,0.55)" : "rgba(255,143,123,0.55)" })));
     current.macd.setData(sorted.map((p) => ({ time: toChartTime(p.time), value: p.macd })));
     current.signal.setData(sorted.map((p) => ({ time: toChartTime(p.time), value: p.signal })));
+
+    const closes = sorted.map((p) => p.close);
+    const api = chart.current;
+    if (api && closes.every((c): c is number => c != null) && closes.length > RSI_LENGTH) {
+      if (!current.rsi) {
+        current.rsi = api.addSeries(LineSeries, {
+          color: COLORS.rsi,
+          lineWidth: 2,
+          priceLineVisible: false,
+          priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+          autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })
+        }, 2);
+        for (const level of [70, 30]) {
+          current.rsi.createPriceLine({ price: level, color: COLORS.band, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+        }
+        api.panes()[0]?.setStretchFactor(2.4);
+        api.panes()[1]?.setStretchFactor(1);
+        api.panes()[2]?.setStretchFactor(1);
+      }
+      const values = wilderRsi(closes as number[], RSI_LENGTH);
+      current.rsi.setData(
+        sorted
+          .map((p, i) => ({ time: toChartTime(p.time), value: values[i] }))
+          .filter((point): point is { time: UTCTimestamp; value: number } => point.value != null)
+      );
+    }
+
     const newest = sorted.length ? sorted[sorted.length - 1].time : null;
     const firstLoad = newestTime.current === null;
     const advanced = newest !== newestTime.current;

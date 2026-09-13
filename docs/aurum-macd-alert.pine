@@ -1,7 +1,7 @@
 // Aurum Signal — MACD crossover alert for the tv-webhook Edge Function.
 //
-// One alert per symbol per timeframe covers BOTH directions, so five SET stocks on M10 and M15
-// costs ten of the twenty technical alerts an Essential plan allows.
+// One alert per symbol per timeframe covers BOTH directions, so nine SET stocks on M10 and M15
+// use eighteen of the twenty technical alerts an Essential plan allows.
 //
 // Cross rule matches the Python watcher and the cloud scanner exactly: the histogram crossing
 // zero, where a touch counts as the side it is leaving (previous <= 0 and current > 0 is

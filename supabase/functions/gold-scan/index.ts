@@ -1,11 +1,10 @@
-// Gold failover scanner: MACD crossovers on CLOSED 10m and 15m candles from the Twelve Data
-// cloud feed, so alerts keep arriving while the laptop (and its MT5 terminal) is off.
+// Gold failover scanner: MACD crossovers on CLOSED 10m and 15m OANDA candles fetched through
+// TradingView's chart socket, so alerts keep arriving while the laptop (and MT5) is off.
 //
-// It is a stand-in, not a replacement. The broker feed and a spot feed disagree on candle
-// micro-structure, and Twelve Data prints bars through the broker's 21:00-22:00 UTC break,
-// so this source fires somewhat more crosses than MT5 does on the same window. Invoked by
-// pg_cron through ops.gold_scan_gate(), which only posts here when the laptop heartbeat has
-// gone quiet, so the two producers never race for the same bar. Manual run: ?force=1.
+// OANDA's session structure is closer to the broker feed than the old generic spot feed. It is
+// still a failover, not a replacement: pg_cron invokes it through ops.gold_scan_gate(), which
+// only posts here when the laptop heartbeat has gone quiet, so the two producers never race for
+// the same bar. Manual run: ?force=1.
 //
 // Timing: cron fires ON the candle boundary and this function does the sub-minute waiting,
 // which puts an alert in the table a handful of seconds after the candle closes rather than
@@ -13,9 +12,10 @@
 import { isSecretCaller, unauthorized } from "../_shared/auth.ts";
 import { adminClient, getSetting, heartbeat } from "../_shared/db.ts";
 import { bangkokClock, crossDirection, eventId, macdSeries, type Direction } from "../_shared/macd.ts";
+import { fetchClosedBars } from "../_shared/tradingview.ts";
 
-const BASE_URL = "https://api.twelvedata.com/time_series";
-const FEED_SYMBOL = "XAU/USD";
+const FEED = "oanda_via_tradingview";
+const FEED_SYMBOL = "OANDA:XAUUSD";
 // MACD(12,26,9) needs a long warm-up before the EMA seed washes out; the laptop uses 260 too.
 const MIN_CLOSED_BARS = 260;
 const CANDLE_HISTORY = 200;
@@ -36,77 +36,16 @@ interface Bar {
   close: number;
 }
 
-function num(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-async function fetchSeries(interval: string, outputsize: number): Promise<Bar[]> {
-  const apiKey = Deno.env.get("TWELVEDATA_API_KEY");
-  if (!apiKey) throw new Error("TWELVEDATA_API_KEY is not set on the function");
-  const params = new URLSearchParams({
-    symbol: FEED_SYMBOL,
-    interval,
-    outputsize: String(outputsize),
-    timezone: "UTC",
-    apikey: apiKey,
-  });
-  const response = await fetch(`${BASE_URL}?${params}`);
-  if (!response.ok) {
-    throw new Error(`Twelve Data HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
-  }
-  const json = await response.json();
-  if (json?.status === "error") throw new Error(`Twelve Data ${json.code}: ${json.message}`);
-  const values = json?.values;
-  if (!Array.isArray(values) || values.length === 0) {
-    throw new Error(`Twelve Data returned no ${interval} values for ${FEED_SYMBOL}`);
-  }
-  const bars: Bar[] = [];
-  for (const value of values) {
-    const close = num(value.close);
-    const openMs = Date.parse(`${String(value.datetime).replace(" ", "T")}Z`);
-    if (close === null || !Number.isFinite(openMs)) continue;
-    bars.push({
-      openMs,
-      open: num(value.open) ?? close,
-      high: num(value.high) ?? close,
-      low: num(value.low) ?? close,
-      close,
-    });
-  }
-  return bars.sort((a, b) => a.openMs - b.openMs);
-}
-
-/** Twelve Data has no 10-minute interval: pair its 5-minute bars on epoch boundaries. */
-export function toTenMinutes(fiveMinute: Bar[]): Bar[] {
-  const buckets = new Map<number, Bar>();
-  for (const bar of fiveMinute) {
-    const openMs = Math.floor(bar.openMs / 600_000) * 600_000;
-    const existing = buckets.get(openMs);
-    if (!existing) {
-      buckets.set(openMs, { ...bar, openMs });
-      continue;
-    }
-    existing.high = Math.max(existing.high, bar.high);
-    existing.low = Math.min(existing.low, bar.low);
-    existing.close = bar.close;
-  }
-  return [...buckets.values()].sort((a, b) => a.openMs - b.openMs);
-}
-
-/** Drop the bar that is still forming: only a bar whose close has passed can be evaluated. */
-export function closedOnly(bars: Bar[], timeframe: number, nowMs: number): Bar[] {
-  return bars.filter((bar) => bar.openMs + timeframe * 60_000 <= nowMs);
-}
-
 async function loadClosedBars(timeframe: number, nowMs: number): Promise<Bar[]> {
-  if (timeframe === 15) {
-    return closedOnly(await fetchSeries("15min", MIN_CLOSED_BARS + 60), 15, nowMs);
-  }
-  if (timeframe === 10) {
-    return closedOnly(toTenMinutes(await fetchSeries("5min", MIN_CLOSED_BARS * 2 + 100)), 10, nowMs);
-  }
-  throw new Error(`Unsupported gold timeframe: ${timeframe}`);
+  if (timeframe !== 10 && timeframe !== 15) throw new Error(`Unsupported gold timeframe: ${timeframe}`);
+  const bars = await fetchClosedBars(FEED_SYMBOL, timeframe, MIN_CLOSED_BARS + 60, nowMs);
+  return bars.map((bar) => ({
+    openMs: bar.time * 1000,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+  }));
 }
 
 /** Open time of the candle that has just closed: the newest boundary, minus one timeframe. */
@@ -174,10 +113,16 @@ function renderAlert(symbol: string, timeframe: number, direction: Direction, ba
     prev_macd: previous.macd,
     prev_signal: previous.signal,
     title: `${symbol} M${timeframe}: ${direction} MACD cross`,
-    body: `MACD ${verb} signal at ${price} (candle closed ${bangkokClock(barClose)} ICT · cloud feed, laptop offline)`,
+    body: `MACD ${verb} signal at ${price} (candle closed ${bangkokClock(barClose)} ICT · OANDA via TradingView, laptop offline)`,
     detected_at: new Date().toISOString(),
     detection_delay_ms: Math.max(0, Date.now() - barClose.getTime()),
-    payload: { feed: "twelvedata", feed_symbol: FEED_SYMBOL, failover: true },
+    payload: {
+      feed: FEED,
+      feed_symbol: FEED_SYMBOL,
+      venue: "OANDA",
+      via: "tradingview_chart_socket",
+      failover: true,
+    },
   };
 }
 
@@ -274,7 +219,10 @@ Deno.serve(async (req) => {
 
     await heartbeat(client, "gold_cloud", true, {
       symbol,
-      feed: FEED_SYMBOL,
+      feed: FEED,
+      feed_symbol: FEED_SYMBOL,
+      venue: "OANDA",
+      via: "tradingview_chart_socket",
       dry_run: dryRun,
       settle_ms: settleMs,
       timeframes: requested,
@@ -284,7 +232,15 @@ Deno.serve(async (req) => {
     return Response.json({ ok: true, dry_run: dryRun, summary });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await heartbeat(client, "gold_cloud", false, { error: message, timeframes: requested, duration_ms: Date.now() - startedAt });
+    await heartbeat(client, "gold_cloud", false, {
+      error: message,
+      feed: FEED,
+      feed_symbol: FEED_SYMBOL,
+      venue: "OANDA",
+      via: "tradingview_chart_socket",
+      timeframes: requested,
+      duration_ms: Date.now() - startedAt,
+    });
     return Response.json({ ok: false, error: message, summary }, { status: 502 });
   }
 });

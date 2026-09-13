@@ -41,8 +41,7 @@ end $$;
 -- Failover gate. The fast job fires ON each candle boundary and the gold-scan function does
 -- the sub-minute waiting itself, so an alert lands seconds after the close instead of a minute
 -- later; the catch-up job runs one minute behind and only picks up what the fast job missed.
--- A timeframe counts as handled once its candle row exists, which also keeps the free Twelve
--- Data quota (800 calls a day) far out of reach.
+-- A timeframe counts as handled once its candle row exists, avoiding duplicate provider reads.
 create or replace function ops.gold_scan_gate(catchup boolean default false) returns text
 language plpgsql as $$
 declare

@@ -193,9 +193,45 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .tabs { display: inline-flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; }
 .tabs button { background: transparent; border: 0; color: var(--muted); font: 500 .74rem "DM Mono", monospace; padding: 7px 12px; border-radius: 9px; cursor: pointer; }
 .tabs button.active { color: var(--mint); background: rgba(113,225,193,.1); }
-.chart-panel { padding: 14px 14px 8px; }
+.chart-panel { padding: 14px 14px 8px; position: relative; }
+
+/* Chart grid: 1, 2 or 4 instruments at once. Two columns is the widest it ever goes, so a
+   four-up is 2x2 rather than a row of slivers. */
+.chart-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.chart-grid { display: grid; gap: 12px; }
+.chart-grid[data-panes="1"] { grid-template-columns: minmax(0, 1fr); }
+.chart-grid[data-panes="2"], .chart-grid[data-panes="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.chart-cell { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 12px; padding: 8px 8px 2px; }
+.chart-cell-head { display: flex; justify-content: flex-end; padding-bottom: 4px; }
+.chart-cell-head select {
+  background: rgba(10, 29, 25, .9); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 8px; font: 500 .7rem "DM Mono", monospace; cursor: pointer; max-width: 100%;
+}
+.chart-wrap { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.empty-state.compact { min-height: 160px; padding: 18px; }
+
+/* Full screen. Real fullscreen is requested where the browser allows it, but the layout is
+   driven by this class so it also works on iPadOS, which refuses fullscreen outside video. */
+.chart-panel.expanded {
+  position: fixed; inset: 0; z-index: 60; margin: 0; border-radius: 0;
+  display: flex; flex-direction: column; padding: 12px;
+  background: #061310; overflow: hidden;
+}
+.chart-panel.expanded .chart-grid { flex: 1 1 auto; min-height: 0; }
+.chart-panel.expanded .chart-grid[data-panes="1"],
+.chart-panel.expanded .chart-grid[data-panes="2"] { grid-template-rows: minmax(0, 1fr); }
+.chart-panel.expanded .chart-grid[data-panes="4"] { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.chart-panel.expanded .chart-cell { min-height: 0; overflow: hidden; }
+.expanded-close { position: absolute; top: 14px; right: 16px; z-index: 2; padding: 6px 12px; border-radius: 9px; cursor: pointer; }
+
+/* Phones and portrait tablets: stacking beats four unreadable slivers. */
+@media (max-width: 820px) {
+  .chart-grid[data-panes="2"], .chart-grid[data-panes="4"] { grid-template-columns: minmax(0, 1fr); }
+  .chart-panel.expanded .chart-grid[data-panes="4"] { grid-template-rows: repeat(4, minmax(0, 1fr)); }
+  .chart-panel.expanded .chart-grid[data-panes="2"] { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+}
 .chart-wrap { position: relative; width: 100%; }
-.chart-surface { width: 100%; }
+.chart-surface { width: 100%; flex: 1 1 auto; min-height: 0; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 4px 6px 10px; color: var(--muted); font: .68rem "DM Mono", monospace; }
 .chart-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 .chart-legend-note { margin-left: auto; opacity: .8; }
@@ -205,9 +241,16 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .set-table tr.selectable { cursor: pointer; }
 .set-table tr.selected td { background: rgba(113,225,193,.06); }
 .set-table .empty-cell { color: var(--muted); padding: 18px 12px; }
+.set-detail-chart { margin-top: 14px; padding: 12px 8px 4px; border-top: 1px solid var(--line); }
+.set-detail-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; align-items: baseline; padding: 0 6px 8px; font: .7rem "DM Mono", monospace; }
+.set-detail-heading strong { color: var(--ink); }
+.set-detail-heading span { color: var(--muted); text-align: right; }
 @media (max-width: 720px) { .chart-legend-note { margin-left: 0; width: 100%; } .set-table th:nth-child(5), .set-table td:nth-child(5) { display: none; } }
 
-.live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; background: rgba(113,225,193,.14); color: var(--mint); border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; }
+.price-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; }
+.price-badge.live { background: rgba(113,225,193,.14); color: var(--mint); }
+.price-badge.closed { background: rgba(142,163,157,.12); color: var(--muted); }
+.price-badge.delayed { background: rgba(214,173,92,.13); color: var(--gold); }
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 6px var(--mint); animation: live-pulse 1.4s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.85); } }
 

@@ -159,7 +159,7 @@ If the watcher briefly restarts, it catches a crossover up to 15 minutes old ins
 
 ## Phase 2: SET stocks with DAOL SEC
 
-DAOL SEC does not currently expose SET equity market data through Settrade Open API, so it should not be wired into this watcher with an unofficial scraping dependency. The practical later route is TradingView Essential plus the real-time SET exchange add-on: create ten bullish crossover alerts for five symbols across M10 and M15, and send their webhooks into this same alert history. Gold stays on the broker's own MT5 feed so its prices match the account exactly.
+DAOL SEC does not currently expose SET equity market data through Settrade Open API. Real-time alerts therefore use TradingView Essential plus the SET exchange add-on: create one two-direction webhook alert per symbol and timeframe, and send those webhooks into this alert history. The nine configured symbols are EA, KCE, BGRIM, GPSC, IVL, STA, STGT, TOP, and CCET. Gold stays on the broker's own MT5 feed whenever the laptop is online.
 
 ## Cost comparison (checked September 2026)
 
@@ -170,18 +170,19 @@ DAOL SEC does not currently expose SET equity market data through Settrade Open 
 | Broker Windows VPS | $0 if the account is eligible | $0 while eligibility is maintained | Best $0 always-on upgrade with exact broker data; check eligibility in the client portal. |
 | AWS Lightsail Windows, 2 GB | $0 setup | $22/month | Predictable always-on fallback with enough RAM for MT5 + Python. |
 | MQL5 virtual hosting | $0 setup | $15/month, less on long terms | **Not compatible with this Python PWA watcher.** It only becomes relevant after rewriting the watcher as an MQL5 EA. |
-| TradingView for five SET stocks | $0 setup | $14.95/month effective when Essential is annual ($12.95 + $2 SET data) | Best phase-2 route with DAOL; 20 technical alerts cover 5 stocks × 2 timeframes. |
+| TradingView for nine SET stocks | $0 setup | $14.95/month effective when Essential is annual ($12.95 + $2 SET data) | Best real-time-alert route with DAOL; 18 technical alerts cover 9 stocks × 2 timeframes. |
 
 References: [Tailscale Personal pricing](https://tailscale.com/pricing), [Exness VPS](https://www.exness.com/vps/), [AWS Lightsail Windows bundles](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-bundles.html), [MQL5 VPS pricing](https://www.mql5.com/en/vps), [TradingView plans](https://www.tradingview.com/pricing/), and [TradingView SET data fees](https://www.tradingview.com/data-coverage/).
 
 ## Chart
 
-The PWA draws the last 200 closed candles of the selected timeframe (M10 / M15 tabs) with a MACD pane
-(histogram, MACD, signal) and marks every confirmed cross with an arrow. Data comes from the watcher:
-`/api/candles?timeframe=10` locally, or the `candles` table in Supabase (published by the watcher in
-cloud mode, live via Realtime). SET tickers get a MACD-only history chart from `set_macd_history`,
-because the free TradingView scanner exposes indicator values but no OHLC history. Axis times are shown
-in Bangkok time.
+The PWA has selectable one-, two-, and four-pane candlestick layouts with full-screen mode. Every
+chart includes MACD, signal, histogram, RSI(14), and matching alert arrows. Gold is available on M10
+and M15, each configured SET stock on M15, and Binance BTCUSDT on M10 and M15. The local API serves
+gold; in cloud mode all series come from the generic `candles` table and update through Supabase
+Realtime. `market-candles` stores closed TradingView OHLC for SET and Bitcoin. SET chart data is the
+anonymous exchange feed and is therefore 15 minutes delayed; Bitcoin is refreshed after each close.
+Axis times are shown in Bangkok time, and badges distinguish LIVE, CLOSED, and DELAYED CLOSE prices.
 
 ## Version 2: Vercel + Supabase (cloud fan-out)
 
@@ -213,12 +214,12 @@ deduplication and synchronization contract.
 
    ```powershell
    npx supabase@2.116.0 secrets set VAPID_KEYS_JWK='{"publicKey":{...},"privateKey":{...}}' VAPID_SUBJECT=mailto:you@example.com PUBLIC_APP_URL=https://<your-app>/
-   npx supabase@2.116.0 functions deploy push-fanout set-scan push-receipt gold-scan tv-webhook
+   npx supabase@2.116.0 functions deploy push-fanout set-scan market-candles push-receipt gold-scan tv-webhook
    ```
 
-   `verify_jwt = false` for all five is already in `supabase/config.toml`; the functions check the
-   secret key (cron, trigger, laptop) or the user JWT (PWA "Send test") themselves. `gold-scan`
-   also needs the cloud feed key: `npx supabase@2.116.0 secrets set TWELVEDATA_API_KEY=...`.
+   `verify_jwt = false` for these functions is already in `supabase/config.toml`; the functions check
+   the secret key (cron, trigger, laptop) or the user JWT (PWA "Send test") themselves. Neither
+   `gold-scan` nor `market-candles` needs a market-data API key.
 
 3. **One user.** Dashboard > Authentication > Users > Add user (email + password, confirmed), then
    Authentication > Sign In / Providers > turn **off** "Allow new users to sign up".
@@ -257,14 +258,15 @@ deduplication and synchronization contract.
    per timeframe: condition **Aurum Signal MACD > Any alert() function call**, and under
    Notifications tick **Webhook URL** with
    `https://<ref>.supabase.co/functions/v1/tv-webhook`. Two-factor authentication must be enabled
-   on the TradingView account or webhooks are refused. One alert covers both directions, so five
-   symbols on M10 and M15 costs ten of Essential's twenty technical alerts.
+   on the TradingView account or webhooks are refused. One alert covers both directions, so the nine
+   symbols on M10 and M15 use eighteen of Essential's twenty technical alerts.
 
    The cron job `aurum-set-scan` keeps running with `set_scan_dry_run = true`: it still fills
-   `set_macd_history` for the PWA's SET chart and `set_state`, but no longer raises alerts. Both
-   producers build the same alert id for a given bar, so if you ever turn the webhook off and set
-   `set_scan_dry_run = false`, alerting falls back to the delayed scanner with no duplicates in
-   between. `set_holidays` is editable from SQL.
+   `set_macd_history` and `set_state`, but no longer raises alerts. Both alert producers build the
+   same id for a given bar, so if you ever turn the webhook off and set `set_scan_dry_run = false`,
+   alerting falls back to the delayed scanner with no duplicates in between. Separately,
+   `aurum-set-candles` writes the nine delayed M15 OHLC series for the PWA, respecting weekdays,
+   `set_holidays`, and SET session hours. `aurum-bitcoin-candles` refreshes BTCUSDT M10/M15 all week.
 
    Checks: `heartbeats.set_tv_webhook` updates on every alert received and shows
    `detection_delay_ms`; the PWA's Cloud health panel shows it as "TradingView alert". The
@@ -286,11 +288,15 @@ deduplication and synchronization contract.
    a successful one is never fetched twice. Watch `fetches` and `waited_ms` in the heartbeat summary
    for a session; if `fetches` is always 1, `gold_cloud_settle_ms` can come down towards 1000.
 
-   Its candles come from Twelve Data spot gold, not from the broker, so it is a stand-in and not a
-   copy. Measured over four trading days on M15, the broker feed produced 26 crosses and the cloud
-   feed 37, of which 18 were the same bar and direction; prices agreed to a mean of $0.18. The cloud
-   feed also prints candles through the broker's nightly break, which shifts the moving averages.
-   Failover alerts carry `source = 'gold_cloud'` and read "Cloud feed" in the PWA history.
+   Its candles are `OANDA:XAUUSD` prices read through TradingView's chart socket, not the broker's
+   own execution feed, so it remains a stand-in rather than an exact copy. Unlike the former Twelve
+   Data source, the OANDA series observes the nightly session gap and tracks the Wisdom chart more
+   closely. Keep the dry run enabled for a full session before arming it. Failover alerts carry
+   `source = 'gold_cloud'`, and their payload records `feed = 'oanda_via_tradingview'`.
+
+   TradingView's chart socket is an unofficial protocol and can change. Both candle functions report
+   failures through `heartbeats`; a socket failure never fabricates a candle or reuses a partial M10
+   bucket.
 
 8. **Keep the Free project awake.** Cron-only traffic may not count as activity; the laptop's weekday
    inserts help, and a twice-weekly external REST ping (GitHub Actions) is the belt-and-braces option.

@@ -1,10 +1,47 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { AlertRecord, CandleSeries, PublicConfig, SetMacdPoint, SetTickerState, StatusResponse, TimeframeState } from "./api";
+import { AlertRecord, CandleSeries, PublicConfig, SetTickerState, StatusResponse, TimeframeState } from "./api";
 import { createBackend } from "./backend";
-import { CandleChart, MacdChart } from "./charts";
+import { CandleChart } from "./charts";
 
 const backend = createBackend();
+const BITCOIN_SYMBOL = "BINANCE:BTCUSDT";
+
+type ChartInstrumentKind = "gold" | "set" | "bitcoin";
+
+interface ChartInstrument {
+  kind: ChartInstrumentKind;
+  symbol: string;
+  timeframe: number;
+}
+
+function candleSeriesKey(symbol: string, timeframe: number): string {
+  return `${symbol}|${timeframe}`;
+}
+
+function chartInstrument(paneKey: string, goldSymbol: string): ChartInstrument | null {
+  if (paneKey.startsWith("gold:")) {
+    const timeframe = Number(paneKey.slice(5));
+    return timeframe === 10 || timeframe === 15 ? { kind: "gold", symbol: goldSymbol, timeframe } : null;
+  }
+  if (paneKey.startsWith("btc:")) {
+    const timeframe = Number(paneKey.slice(4));
+    return timeframe === 10 || timeframe === 15 ? { kind: "bitcoin", symbol: BITCOIN_SYMBOL, timeframe } : null;
+  }
+  if (paneKey.startsWith("set:")) {
+    const symbol = paneKey.slice(4);
+    return symbol ? { kind: "set", symbol, timeframe: 15 } : null;
+  }
+  return null;
+}
+
+function chartInstrumentLabel(paneKey: string, goldSymbol: string): string {
+  const instrument = chartInstrument(paneKey, goldSymbol);
+  if (!instrument) return paneKey;
+  if (instrument.kind === "gold") return `${goldSymbol} · M${instrument.timeframe}`;
+  if (instrument.kind === "bitcoin") return `BTCUSDT · M${instrument.timeframe} · closed`;
+  return `${instrument.symbol.replace(/^SET:/, "")} · M15 · delayed`;
+}
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -272,43 +309,98 @@ export default function App() {
   const [standalone, setStandalone] = useState(window.matchMedia("(display-mode: standalone)").matches);
   const [shareOpen, setShareOpen] = useState(false);
   const [lineModalOpen, setLineModalOpen] = useState(false);
-  const [timeframe, setTimeframe] = useState<number>(() => Number(localStorage.getItem("aurum-timeframe")) || 10);
-  const [candlesByTf, setCandlesByTf] = useState<Record<number, CandleSeries>>({});
+  const [layout, setLayout] = useState<number>(() => Number(localStorage.getItem("aurum-layout")) || 1);
+  const [panes, setPanes] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("aurum-panes") || "null");
+      if (Array.isArray(saved) && saved.every((value) => typeof value === "string")) return saved as string[];
+    } catch {
+      // A corrupt entry just falls through to the default arrangement.
+    }
+    return ["gold:10", "gold:15", "gold:10", "gold:15"];
+  });
+  const [expanded, setExpanded] = useState(false);
+  const [candleSeries, setCandleSeries] = useState<Record<string, CandleSeries>>({});
   const [chartError, setChartError] = useState("");
   const [setTickers, setSetTickers] = useState<SetTickerState[]>([]);
   const [setPanelError, setSetPanelError] = useState("");
   const [selectedSet, setSelectedSet] = useState<string>("");
-  const [setHistory, setSetHistory] = useState<SetMacdPoint[]>([]);
   const highlightedAlert = useMemo(() => new URLSearchParams(window.location.search).get("alert"), []);
   const refreshing = useRef(false);
-  const candleKey = useRef<Record<number, string>>({});
+  const chartPanel = useRef<HTMLElement | null>(null);
+  // Public config falls back to settings.gold_symbol even when there has never been an MT5
+  // heartbeat, so prefer it when choosing the database key for cloud-only charts.
+  const goldSymbol = config?.symbol || status?.watcher.symbol || "XAUUSDm";
 
-  const refresh = useCallback(async (quiet = false) => {
+  // Only the panes on screen are worth fetching: a 1-up gold chart should not pull nine SET
+  // candle histories every refresh. The selected SET detail is added separately below.
+  const visiblePanes = useMemo(() => {
+    // A saved arrangement from an older version can be short; pad before slicing so a 4-up
+    // never renders three cells.
+    const filled = [...panes];
+    while (filled.length < 4) filled.push(filled.length % 2 === 0 ? "gold:10" : "gold:15");
+    return filled.slice(0, layout);
+  }, [panes, layout]);
+  const visibleInstruments = useMemo(
+    () => visiblePanes
+      .map((paneKey) => chartInstrument(paneKey, goldSymbol))
+      .filter((value): value is ChartInstrument => value !== null),
+    [visiblePanes, goldSymbol]
+  );
+  const requestedInstruments = useMemo(() => {
+    const requested = [
+      ...visibleInstruments,
+      ...(selectedSet ? [{ kind: "set" as const, symbol: selectedSet, timeframe: 15 }] : [])
+    ].filter((instrument) => backend.kind === "supabase" || instrument.kind === "gold");
+    return [...new Map(requested.map((instrument) => [
+      candleSeriesKey(instrument.symbol, instrument.timeframe),
+      instrument
+    ])).values()];
+  }, [visibleInstruments, selectedSet]);
+
+  const loadRequestedCandles = useCallback(async () => {
+    if (!authed || requestedInstruments.length === 0) return;
+    const results = await Promise.allSettled(
+      requestedInstruments.map(async (instrument) => ({
+        instrument,
+        series: await backend.candles(instrument.symbol, instrument.timeframe)
+      }))
+    );
+    const loaded: Record<string, CandleSeries> = {};
+    const failures: string[] = [];
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        const { instrument, series } = result.value;
+        loaded[candleSeriesKey(instrument.symbol, instrument.timeframe)] = series;
+      } else {
+        failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+      }
+    }
+    if (Object.keys(loaded).length) setCandleSeries((previous) => ({ ...previous, ...loaded }));
+    setChartError([...new Set(failures)].join(" · "));
+  }, [authed, requestedInstruments]);
+
+  // A light refresh is the one a watcher heartbeat triggers: it moves the forming candle and
+  // nothing else, so it skips the alert list, the delivery counts and the latency sample.
+  const refresh = useCallback(async (quiet = false, light = false) => {
     if (!authed || refreshing.current) return;
     refreshing.current = true;
     try {
-      const [nextStatus, nextAlerts] = await Promise.all([backend.status(), backend.alerts()]);
+      const [nextStatus, nextAlerts] = await Promise.all([
+        backend.status({ light }),
+        light ? Promise.resolve(null) : backend.alerts()
+      ]);
       setStatus(nextStatus);
-      setAlerts(nextAlerts);
+      if (nextAlerts) setAlerts(nextAlerts);
       setLastSuccessAt(Date.now());
       setError("");
 
-      // Candles change only on a bar transition: re-download the series only when the active
-      // timeframe's latest closed bar (or its provisional flag) differs from what we have.
-      const card = nextStatus.watcher.timeframes[String(timeframe)];
-      const key = card ? `${card.bar_open}|${card.provisional ? "p" : "f"}` : "none";
-      if (candleKey.current[timeframe] !== key) {
-        try {
-          const series = await backend.candles(timeframe);
-          setCandlesByTf((previous) => ({ ...previous, [series.timeframe_minutes]: series }));
-          candleKey.current[timeframe] = key;
-          setChartError("");
-        } catch (candleError) {
-          setChartError(candleError instanceof Error ? candleError.message : String(candleError));
-        }
-      }
+      // Full polling and candle Realtime events read the rows that are actually on screen.
+      // Heartbeat-only refreshes skip this query: their only chart change is gold's forming bar,
+      // which is already carried inside the heartbeat status payload.
+      if (!light) await loadRequestedCandles();
 
-      if (backend.kind === "supabase") {
+      if (backend.kind === "supabase" && !light) {
         try {
           setSetTickers(await backend.setTickers());
           setSetPanelError("");
@@ -321,7 +413,7 @@ export default function App() {
     } finally {
       refreshing.current = false;
     }
-  }, [authed, timeframe]);
+  }, [authed, loadRequestedCandles]);
 
   // The polling/Realtime effect below must not re-subscribe whenever refresh changes identity
   // (it does on every timeframe switch), so it always calls the latest refresh through a ref.
@@ -331,28 +423,46 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    localStorage.setItem("aurum-timeframe", String(timeframe));
-    if (authed) void refreshRef.current(true);
-  }, [timeframe, authed]);
-
-  const selectedSetBar = useMemo(
-    () => setTickers.find((row) => row.symbol === selectedSet)?.last_bar_time ?? "",
-    [setTickers, selectedSet]
-  );
+    localStorage.setItem("aurum-layout", String(layout));
+    localStorage.setItem("aurum-panes", JSON.stringify(panes));
+  }, [layout, panes]);
 
   useEffect(() => {
-    if (!authed || !selectedSet) return;
-    let cancelled = false;
-    backend
-      .setHistory(selectedSet)
-      .then((points) => { if (!cancelled) setSetHistory(points); })
-      .catch((historyError) => { if (!cancelled) setSetPanelError(historyError instanceof Error ? historyError.message : String(historyError)); });
-    return () => { cancelled = true; };
-  }, [authed, selectedSet, selectedSetBar]);
+    if (authed) void loadRequestedCandles();
+  }, [authed, loadRequestedCandles]);
 
   useEffect(() => {
-    if (!selectedSet && setTickers.length) setSelectedSet(setTickers[0].symbol);
+    if (!setTickers.length) {
+      if (selectedSet) setSelectedSet("");
+      return;
+    }
+    if (setTickers.length && !setTickers.some((row) => row.symbol === selectedSet)) {
+      setSelectedSet(setTickers[0].symbol);
+    }
   }, [setTickers, selectedSet]);
+
+  const toggleExpanded = useCallback(() => {
+    setExpanded((wasExpanded) => {
+      const next = !wasExpanded;
+      // Ask for real fullscreen where the browser allows it. iPadOS Safari refuses it on
+      // anything but a video, so the CSS class is what actually guarantees a full-viewport
+      // chart on the tablet; the request failing is not an error worth surfacing.
+      if (next) void chartPanel.current?.requestFullscreen?.().catch(() => undefined);
+      else if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const onFullscreenChange = () => { if (!document.fullscreenElement) setExpanded(false); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
   useEffect(() => {
     backend.hasSession().then(setAuthed).catch(() => setAuthed(false));
@@ -387,10 +497,18 @@ export default function App() {
     // Realtime emits one event per changed row (a watcher restart publishes hundreds of candles
     // at once), so events are coalesced into a single refresh per second.
     let debounce: number | undefined;
+    // A heartbeat only carries the forming candle, so it gets the cheap refresh. An alert or a
+    // new candle row gets the full one.
+    let pendingLight = true;
     const unsubscribe = backend.onChange
-      ? backend.onChange(() => {
+      ? backend.onChange((table) => {
+          if (table !== "heartbeats") pendingLight = false;
           window.clearTimeout(debounce);
-          debounce = window.setTimeout(() => void refreshRef.current(true), 1000);
+          debounce = window.setTimeout(() => {
+            const light = pendingLight;
+            pendingLight = true;
+            void refreshRef.current(true, light);
+          }, 1000);
         })
       : undefined;
     return () => {
@@ -562,6 +680,64 @@ export default function App() {
     () => Object.values(status?.watcher.timeframes || {}).sort((a, b) => a.timeframe_minutes - b.timeframe_minutes),
     [status]
   );
+
+  const paneOptions = useMemo(() => {
+    const setSymbols = [...new Set(setTickers.map((row) => row.symbol))];
+    return [
+      ...[10, 15].map((tf) => ({ value: `gold:${tf}`, label: `${goldSymbol} · M${tf}` })),
+      ...(backend.kind === "supabase"
+        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · M${tf} · closed` }))
+        : []),
+      ...setSymbols.map((symbol) => ({ value: `set:${symbol}`, label: `${symbol.replace(/^SET:/, "")} · M15 · delayed` }))
+    ];
+  }, [setTickers, goldSymbol]);
+
+  // Four charts at once need less height each than one. In fullscreen the CSS takes over and
+  // the chart resizes itself to the cell, so this is only the starting size.
+  const paneHeight = layout === 1 ? 560 : layout === 2 ? 420 : 340;
+
+  const renderPane = (paneKey: string) => {
+    const instrument = chartInstrument(paneKey, goldSymbol);
+    if (!instrument || (backend.kind === "legacy" && instrument.kind !== "gold")) {
+      return (
+        <div className="empty-state compact">
+          <strong>This chart is not available on the local backend</strong>
+          <p>Choose a gold timeframe, or open the Supabase deployment for SET and Bitcoin.</p>
+        </div>
+      );
+    }
+    const series = candleSeries[candleSeriesKey(instrument.symbol, instrument.timeframe)];
+    if (!series?.candles.length) {
+      const name = instrument.kind === "bitcoin" ? "Bitcoin" : instrument.symbol.replace(/^SET:/, "");
+      const detail = instrument.kind === "set"
+        ? "Closed SET candles arrive from the 15-minute-delayed feed."
+        : instrument.kind === "bitcoin"
+          ? "The cloud candle scanner has not stored this Bitcoin timeframe yet."
+          : backend.kind === "supabase"
+            ? "Gold candles appear after the laptop watcher or cloud failover publishes them."
+            : "Candles appear after the first evaluated MT5 bar.";
+      return (
+        <div className="empty-state compact">
+          <strong>No {name} candles yet for M{instrument.timeframe}</strong>
+          <p>{detail}</p>
+        </div>
+      );
+    }
+    const forming = instrument.kind === "gold" && status?.watcher.connected
+      ? status?.watcher.timeframes[String(instrument.timeframe)]?.forming || series.forming
+      : null;
+    return (
+      <CandleChart
+        candles={series.candles}
+        alerts={alerts}
+        symbol={instrument.symbol}
+        timeframe={instrument.timeframe}
+        forming={forming}
+        priceStatus={instrument.kind === "set" ? "delayed" : "closed"}
+        height={paneHeight}
+      />
+    );
+  };
   const apiReachable = Boolean(status && lastSuccessAt && clock - lastSuccessAt < (backend.onChange ? 90_000 : 12_000));
   const connected = Boolean(apiReachable && status?.watcher.connected);
   const feedFresh = cards.some((card) => card.feed_fresh);
@@ -641,7 +817,7 @@ export default function App() {
         <>
           <section className="hero">
             <div>
-              <span className="eyebrow">{status?.watcher.symbol || config?.symbol || "XAUUSDm"} · Exness MT5</span>
+              <span className="eyebrow">{goldSymbol} · MT5</span>
               <h1>Watching the close.</h1>
               <p>Alerts fire only after a candle is complete, so the signal does not repaint.</p>
             </div>
@@ -747,33 +923,59 @@ export default function App() {
           </section>
 
           <div className="section-title">
-            <div><span className="eyebrow">Chart</span><h2>{status?.watcher.symbol || config?.symbol || "XAUUSDm"} · MACD 12 / 26 / 9</h2></div>
-            <div className="tabs" role="tablist" aria-label="Timeframe">
-              {(config?.timeframes?.length ? config.timeframes : [10, 15]).map((tf) => (
-                <button key={tf} role="tab" aria-selected={tf === timeframe} className={tf === timeframe ? "active" : ""} onClick={() => setTimeframe(tf)}>
-                  M{tf}
-                </button>
-              ))}
+            <div><span className="eyebrow">Chart</span><h2>MACD 12 / 26 / 9 · RSI 14</h2></div>
+            <div className="chart-controls">
+              <div className="tabs" role="group" aria-label="Chart layout">
+                {[1, 2, 4].map((count) => (
+                  <button
+                    key={count}
+                    className={count === layout ? "active" : ""}
+                    aria-pressed={count === layout}
+                    onClick={() => setLayout(count)}
+                  >
+                    {count} up
+                  </button>
+                ))}
+              </div>
+              <button className="ghost" onClick={toggleExpanded}>{expanded ? "Exit full screen" : "Full screen"}</button>
             </div>
           </div>
-          <section className="panel chart-panel">
+          <section className={`panel chart-panel${expanded ? " expanded" : ""}`} ref={chartPanel}>
             {chartError && <div className="message error"><span>Chart data: {chartError}</span></div>}
-            {candlesByTf[timeframe]?.candles.length ? (
-              <CandleChart
-                key={timeframe}
-                candles={candlesByTf[timeframe].candles}
-                alerts={alerts}
-                symbol={candlesByTf[timeframe].symbol}
-                timeframe={timeframe}
-                forming={status?.watcher.timeframes[String(timeframe)]?.forming || candlesByTf[timeframe]?.forming}
-              />
-            ) : !chartError ? (
-              <div className="empty-state">
-                <span className="empty-ring" />
-                <strong>No candles yet for M{timeframe}</strong>
-                <p>{backend.kind === "supabase" ? "The laptop watcher publishes candles once it runs in cloud mode." : "Candles appear after the first evaluated bar."}</p>
-              </div>
-            ) : null}
+            {expanded && (
+              <button className="ghost expanded-close" onClick={toggleExpanded} aria-label="Exit full screen">Close</button>
+            )}
+            <div className="chart-grid" data-panes={layout}>
+              {visiblePanes.map((paneKey, index) => (
+                <div className="chart-cell" key={`${index}:${paneKey}`}>
+                  <div className="chart-cell-head">
+                    <select
+                      value={paneKey}
+                      aria-label={`Chart ${index + 1} instrument`}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setPanes((previous) => {
+                          const next = [...previous];
+                          while (next.length < 4) next.push("gold:10");
+                          next[index] = value;
+                          return next;
+                        });
+                      }}
+                    >
+                      {/* A pane saved against a ticker that has since left set_tickers keeps its
+                          own entry, so the dropdown never renders blank. */}
+                      {(paneOptions.some((option) => option.value === paneKey)
+                        ? paneOptions
+                        : [{ value: paneKey, label: chartInstrumentLabel(paneKey, goldSymbol) }, ...paneOptions]
+                      ).map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {renderPane(paneKey)}
+                </div>
+              ))}
+            </div>
           </section>
 
           {backend.kind === "supabase" && (
@@ -789,7 +991,7 @@ export default function App() {
                   </thead>
                   <tbody>
                     {setTickers.length === 0 ? (
-                      <tr><td className="empty-cell" colSpan={6}>{setPanelError ? "Could not load SET data." : "The SET scanner has not stored any values yet. Enable it in Supabase settings (set_scan_enabled) after the dry run."}</td></tr>
+                      <tr><td className="empty-cell" colSpan={6}>{setPanelError ? "Could not load SET data." : "No SET tickers are configured yet."}</td></tr>
                     ) : setTickers.map((row) => (
                       <tr
                         key={row.symbol}
@@ -806,12 +1008,27 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-                {selectedSet && setHistory.length > 1 && (
-                  <div className="chart-panel">
-                    <div className="chart-legend">
-                      <span>{selectedSet.replace(/^SET:/, "")} · MACD history · {setHistory.length} bars · times in Bangkok</span>
+                {selectedSet && (
+                  <div className="set-detail-chart">
+                    <div className="set-detail-heading">
+                      <strong>{selectedSet.replace(/^SET:/, "")} · M15 candlesticks</strong>
+                      <span>Closed bars · TradingView, delayed 15 minutes</span>
                     </div>
-                    <MacdChart points={setHistory} />
+                    {candleSeries[candleSeriesKey(selectedSet, 15)]?.candles.length ? (
+                      <CandleChart
+                        candles={candleSeries[candleSeriesKey(selectedSet, 15)].candles}
+                        alerts={alerts}
+                        symbol={selectedSet}
+                        timeframe={15}
+                        priceStatus="delayed"
+                        height={360}
+                      />
+                    ) : (
+                      <div className="empty-state compact">
+                        <strong>No stored candlesticks for {selectedSet.replace(/^SET:/, "")} yet</strong>
+                        <p>The cloud scanner will populate this chart with closed, delayed M15 bars.</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

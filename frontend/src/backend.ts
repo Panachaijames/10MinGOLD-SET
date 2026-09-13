@@ -27,20 +27,21 @@ export interface Backend {
   signIn(input: SignInInput): Promise<void>;
   signOut(): Promise<void>;
   publicConfig(): Promise<PublicConfig>;
-  status(): Promise<StatusResponse>;
+  /** `light` skips the expensive latency sample and counts, reusing the last values. */
+  status(options?: { light?: boolean }): Promise<StatusResponse>;
   alerts(): Promise<AlertRecord[]>;
   subscribe(subscription: PushSubscriptionJSON): Promise<void>;
   unsubscribe(endpoint: string): Promise<void>;
   testPush(): Promise<TestPushResult>;
   testLine?(): Promise<{ ok: boolean; message?: string }>;
-  /** Recent closed gold candles with MACD for one timeframe (oldest first). */
-  candles(timeframe: number, limit?: number): Promise<CandleSeries>;
+  /** Recent closed candles for one explicit symbol/timeframe pair (oldest first). */
+  candles(symbol: string, timeframe: number, limit?: number): Promise<CandleSeries>;
   /** SET tickers: latest scanner state; empty on the legacy backend. */
   setTickers(): Promise<SetTickerState[]>;
   /** SET tickers: MACD history points for one ticker; empty on the legacy backend. */
   setHistory(symbol: string, limit?: number): Promise<SetMacdPoint[]>;
   /** Optional live updates; returns an unsubscribe function. */
-  onChange?(callback: () => void): () => void;
+  onChange?(callback: (table: string) => void): () => void;
 }
 
 const TOKEN_KEY = "aurum-app-token";
@@ -95,7 +96,10 @@ class LegacyBackend implements Backend {
     return { ok: res.ok, message: "LINE test notification delivered." };
   }
 
-  candles(timeframe: number, limit = 200): Promise<CandleSeries> {
+  candles(_symbol: string, timeframe: number, limit = 200): Promise<CandleSeries> {
+    // The local FastAPI endpoint is backed by the one configured MT5 gold symbol. The explicit
+    // symbol argument keeps the interface consistent with Supabase without pretending that the
+    // legacy process can serve SET or Bitcoin candles.
     return api.candles(this.token(), timeframe, limit);
   }
 
@@ -106,6 +110,12 @@ class LegacyBackend implements Backend {
   async setHistory(): Promise<SetMacdPoint[]> {
     return [];
   }
+}
+
+interface StatusExtras {
+  subscriptions: number;
+  pending: number;
+  latency: StatusResponse["latency"];
 }
 
 interface HeartbeatRow {
@@ -159,15 +169,10 @@ function percentile(values: number[], fraction: number): number | null {
 class SupabaseBackend implements Backend {
   readonly kind = "supabase" as const;
   private readonly client: SupabaseClient;
-  private symbolCache: string | null = null;
+  private cachedExtras: StatusExtras | null = null;
 
   constructor(url: string, publishableKey: string) {
     this.client = createClient(url, publishableKey, { auth: { persistSession: true, autoRefreshToken: true } });
-  }
-
-  private async symbol(): Promise<string> {
-    if (!this.symbolCache) this.symbolCache = (await this.publicConfig()).symbol;
-    return this.symbolCache;
   }
 
   async hasSession(): Promise<boolean> {
@@ -194,7 +199,12 @@ class SupabaseBackend implements Backend {
   }
 
   async publicConfig(): Promise<PublicConfig> {
-    const gold = (await this.heartbeats()).gold_mt5;
+    const [heartbeats, goldSetting] = await Promise.all([
+      this.heartbeats(),
+      this.client.from("settings").select("value").eq("key", "gold_symbol").maybeSingle()
+    ]);
+    if (goldSetting.error) throw new Error(goldSetting.error.message);
+    const gold = heartbeats.gold_mt5;
     const details = (gold?.details || {}) as {
       symbol?: string;
       timeframes?: Record<string, unknown>;
@@ -202,9 +212,10 @@ class SupabaseBackend implements Backend {
       line_bot_id?: string | null;
       line_bot_add_url?: string | null;
     };
+    const configuredSymbol = typeof goldSetting.data?.value === "string" ? goldSetting.data.value : null;
     return {
       vapid_public_key: __VAPID_PUBLIC_KEY__,
-      symbol: details.symbol || "XAUUSDm",
+      symbol: details.symbol || configuredSymbol || "XAUUSDm",
       timeframes: Object.keys(details.timeframes || {}).map(Number).filter(Boolean),
       poll_interval_ms: 500,
       line_configured: details.line_configured !== undefined ? Boolean(details.line_configured) : true,
@@ -213,9 +224,13 @@ class SupabaseBackend implements Backend {
     };
   }
 
-  async status(): Promise<StatusResponse> {
-    const [heartbeats, subscriptions, pending, recent] = await Promise.all([
-      this.heartbeats(),
+  /**
+   * Counts and the 200-row latency sample: everything in a status refresh that is not the
+   * heartbeat itself. A watcher heartbeat only moves the forming candle, so re-running these
+   * on every one of them is what made a faster heartbeat expensive.
+   */
+  private async statusExtras(): Promise<StatusExtras> {
+    const [subscriptions, pending, recent] = await Promise.all([
       this.client.from("push_subscriptions").select("endpoint", { count: "exact", head: true }).eq("enabled", true),
       this.client.from("push_deliveries").select("id", { count: "exact", head: true }).eq("status", "pending"),
       this.client
@@ -225,12 +240,31 @@ class SupabaseBackend implements Backend {
         .order("created_at", { ascending: false })
         .limit(200)
     ]);
-    const gold = heartbeats.gold_mt5;
-    const details = (gold?.details || {}) as Partial<StatusResponse["watcher"]>;
-    const goldFresh = Boolean(gold) && Date.now() - Date.parse(gold.last_seen) < 90_000;
     const latencies = ((recent.data as { bar_close: string | null; first_device_received_at: string | null }[]) || [])
       .filter((row) => row.bar_close && row.first_device_received_at)
       .map((row) => Math.max(0, Date.parse(row.first_device_received_at as string) - Date.parse(row.bar_close as string)));
+    return {
+      subscriptions: subscriptions.count ?? 0,
+      pending: pending.count ?? 0,
+      latency: {
+        samples: latencies.length,
+        p50_ms: percentile(latencies, 0.5),
+        p95_ms: percentile(latencies, 0.95),
+        max_ms: latencies.length ? Math.round(Math.max(...latencies)) : null
+      }
+    };
+  }
+
+  async status(options?: { light?: boolean }): Promise<StatusResponse> {
+    const reuse = Boolean(options?.light) && this.cachedExtras !== null;
+    const [heartbeats, extras] = await Promise.all([
+      this.heartbeats(),
+      reuse ? Promise.resolve(this.cachedExtras as StatusExtras) : this.statusExtras()
+    ]);
+    this.cachedExtras = extras;
+    const gold = heartbeats.gold_mt5;
+    const details = (gold?.details || {}) as Partial<StatusResponse["watcher"]>;
+    const goldFresh = Boolean(gold) && Date.now() - Date.parse(gold.last_seen) < 90_000;
     return {
       watcher: {
         running: goldFresh && Boolean(details.running ?? true),
@@ -248,14 +282,9 @@ class SupabaseBackend implements Backend {
         delivery_alive: Boolean(heartbeats.push_fanout),
         timeframes: details.timeframes || {}
       },
-      subscriptions: subscriptions.count ?? 0,
-      pending_pushes: pending.count ?? 0,
-      latency: {
-        samples: latencies.length,
-        p50_ms: percentile(latencies, 0.5),
-        p95_ms: percentile(latencies, 0.95),
-        max_ms: latencies.length ? Math.round(Math.max(...latencies)) : null
-      },
+      subscriptions: extras.subscriptions,
+      pending_pushes: extras.pending,
+      latency: extras.latency,
       cloud: {
         gold_last_seen: gold?.last_seen ?? null,
         gold_cloud_last_seen: heartbeats.gold_cloud?.last_seen ?? null,
@@ -330,13 +359,24 @@ class SupabaseBackend implements Backend {
   }
 
   async testLine(): Promise<{ ok: boolean; message?: string }> {
-    const { error } = await this.client.functions.invoke("push-fanout", { body: { mode: "test" } });
+    const { data, error } = await this.client.functions.invoke("push-fanout", { body: { mode: "test" } });
     if (error) throw new Error(error.message || "LINE test failed");
-    return { ok: true, message: "LINE test triggered via cloud fan-out." };
+    // The cloud function reads its own secrets, so LINE can be unconfigured there while it works
+    // from the laptop. Report that instead of claiming the test was sent.
+    const line = (data as { line?: { configured?: boolean; ok?: boolean; status?: number; error?: string } } | null)?.line;
+    if (!line) {
+      throw new Error("push-fanout did not report a LINE result. Redeploy it so the test can tell you what happened.");
+    }
+    if (!line.configured) {
+      throw new Error(`LINE is not set up on the cloud function: ${line.error ?? "secrets missing"}.`);
+    }
+    if (!line.ok) {
+      throw new Error(`LINE rejected the message${line.status ? ` (HTTP ${line.status})` : ""}: ${line.error ?? "unknown error"}`);
+    }
+    return { ok: true, message: "LINE test delivered from the cloud fan-out." };
   }
 
-  async candles(timeframe: number, limit = 200): Promise<CandleSeries> {
-    const symbol = await this.symbol();
+  async candles(symbol: string, timeframe: number, limit = 200): Promise<CandleSeries> {
     const { data, error } = await this.client
       .from("candles")
       .select("bar_time,open,high,low,close,macd,signal,histogram,provisional")
@@ -365,14 +405,34 @@ class SupabaseBackend implements Backend {
   }
 
   async setTickers(): Promise<SetTickerState[]> {
-    const { data, error } = await this.client
-      .from("set_state")
-      .select("symbol,timeframe,last_bar_time,last_macd,last_signal,last_hist,update_mode,last_polled_at,last_error")
-      .order("symbol")
-      .order("timeframe");
-    if (error) throw new Error(error.message);
+    const [stateResult, settingResult] = await Promise.all([
+      this.client
+        .from("set_state")
+        .select("symbol,timeframe,last_bar_time,last_macd,last_signal,last_hist,update_mode,last_polled_at,last_error"),
+      this.client.from("settings").select("value").eq("key", "set_tickers").maybeSingle()
+    ]);
+    if (stateResult.error) throw new Error(stateResult.error.message);
+    if (settingResult.error) throw new Error(settingResult.error.message);
     type Row = { symbol: string; timeframe: number; last_bar_time: number | null; last_macd: number | null; last_signal: number | null; last_hist: number | null; update_mode: string | null; last_polled_at: string | null; last_error: string | null };
-    return ((data as Row[]) || []).map((row) => ({
+    const rows = (stateResult.data as Row[]) || [];
+    const stateBySymbol = new Map(rows.map((row) => [row.symbol, row]));
+    const configured = Array.isArray(settingResult.data?.value)
+      ? settingResult.data.value.filter((value): value is string => typeof value === "string" && value.startsWith("SET:"))
+      : [];
+    // Settings are the source of truth. This makes all configured chart choices visible before
+    // set-scan has written its first state row; fall back to state for older deployments.
+    const symbols = [...new Set(configured.length ? configured : rows.map((row) => row.symbol))];
+    return symbols.map((symbol) => stateBySymbol.get(symbol) ?? {
+      symbol,
+      timeframe: 15,
+      last_bar_time: null,
+      last_macd: null,
+      last_signal: null,
+      last_hist: null,
+      update_mode: null,
+      last_polled_at: null,
+      last_error: null
+    }).map((row) => ({
       symbol: row.symbol,
       timeframe_minutes: row.timeframe,
       last_bar_time: row.last_bar_time ? new Date(Number(row.last_bar_time) * 1000).toISOString() : null,
@@ -404,14 +464,14 @@ class SupabaseBackend implements Backend {
     }));
   }
 
-  onChange(callback: () => void): () => void {
+  onChange(callback: (table: string) => void): () => void {
     // A unique topic per subscription: channel(topic) returns an existing channel with the same
     // name, so a resubscribe racing a still-leaving channel would otherwise silently die.
     const channel: RealtimeChannel = this.client
       .channel(`aurum-live-${Math.random().toString(36).slice(2, 10)}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "alerts" }, callback)
-      .on("postgres_changes", { event: "*", schema: "public", table: "heartbeats" }, callback)
-      .on("postgres_changes", { event: "*", schema: "public", table: "candles" }, callback)
+      .on("postgres_changes", { event: "*", schema: "public", table: "alerts" }, () => callback("alerts"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "heartbeats" }, () => callback("heartbeats"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "candles" }, () => callback("candles"))
       .subscribe();
     return () => {
       void this.client.removeChannel(channel);

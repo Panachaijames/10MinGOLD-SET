@@ -247,10 +247,26 @@ async function sweep() {
   return result;
 }
 
-async function sendLineAlert(alert: AlertRow | null): Promise<void> {
+/** What happened on the LINE leg, so a silent misconfiguration cannot look like success. */
+export interface LineResult {
+  configured: boolean;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+async function sendLineAlert(alert: AlertRow | null): Promise<LineResult> {
   const token = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN");
   const userId = Deno.env.get("LINE_USER_ID");
-  if (!token || !userId) return;
+  if (!token || !userId) {
+    // The laptop reads these from .env; the function has its own secrets and cannot see that
+    // file, so this is the usual reason LINE works locally and not from the cloud.
+    const missing = [!token ? "LINE_CHANNEL_ACCESS_TOKEN" : null, !userId ? "LINE_USER_ID" : null]
+      .filter(Boolean)
+      .join(" and ");
+    console.error(`LINE is not configured on this function: ${missing} not set`);
+    return { configured: false, ok: false, error: `${missing} not set on the function` };
+  }
 
   const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "/").replace(/\/?$/, "/");
   const lines: string[] = [];
@@ -280,10 +296,15 @@ async function sendLineAlert(alert: AlertRow | null): Promise<void> {
       }),
     });
     if (!res.ok) {
-      console.error("LINE push error:", res.status, await res.text());
+      const detail = (await res.text()).slice(0, 200);
+      console.error("LINE push error:", res.status, detail);
+      return { configured: true, ok: false, status: res.status, error: detail };
     }
+    return { configured: true, ok: true };
   } catch (err) {
-    console.error("LINE push network exception:", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("LINE push network exception:", detail);
+    return { configured: true, ok: false, error: detail };
   }
 }
 
@@ -304,8 +325,8 @@ Deno.serve(async (req) => {
   if (mode === "test") {
     if (!secret && !(await isUserCaller(req))) return unauthorized();
     // The user is waiting for the result, so send synchronously.
-    const [result] = await Promise.all([fanOut(null, "test"), sendLineAlert(null)]);
-    return Response.json({ ok: true, ...result }, { headers });
+    const [result, line] = await Promise.all([fanOut(null, "test"), sendLineAlert(null)]);
+    return Response.json({ ok: true, ...result, line }, { headers });
   }
   if (!secret) return unauthorized();
 

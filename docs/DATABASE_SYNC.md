@@ -9,12 +9,12 @@ closed candle or lose a confirmed crossover.
 | Table | Written by | Read by | Retention and purpose |
 |---|---|---|---|
 | `alerts` | Windows gold watcher, later TradingView/SET ingestion, watchdog | PWA, push fan-out | Permanent trading-signal history. Deterministic `id` and a unique source/symbol/timeframe/bar/direction key make retries safe. |
-| `candles` | Windows gold watcher | PWA chart | Last 14 days of closed XAUUSDm M10/M15 OHLC and MACD values. Rows are upserted by symbol, timeframe and UTC bar-open time. |
-| `heartbeats` | Windows watcher and Edge Functions | PWA, watchdog | One frequently-upserted row per component (`gold_mt5`, `set_tv`, `push_fanout`); no growing heartbeat log. |
+| `candles` | Windows gold watcher, `gold-scan`, `market-candles` | PWA chart | Last 14 days of gold M10/M15, SET M15, and Bitcoin M10/M15 OHLC and MACD values. Rows are upserted by symbol, timeframe and UTC bar-open time. |
+| `heartbeats` | Windows watcher and Edge Functions | PWA, watchdog | One frequently-upserted row per component (`gold_mt5`, `gold_cloud`, `set_tv`, `market_candles`, `push_fanout`); no growing heartbeat log. |
 | `push_subscriptions` | Authenticated PWA | `push-fanout` | One current browser endpoint and key pair per installed device. Disabled when a push service reports that it is gone. |
 | `push_deliveries` | `push-fanout`, `push-receipt` | PWA latency/status | Per-alert/per-device delivery state and receipt timestamps; purged after 30 days. |
 | `set_state` | SET ingestion/scanner | PWA, SET scanner | Latest MACD state and cursor per stock **and timeframe**. Composite key `(symbol,timeframe)` supports M10 and M15. |
-| `set_macd_history` | SET ingestion/scanner | PWA chart | Per-bar SET MACD history, currently retained for 60 days. |
+| `set_macd_history` | SET scanner | Scanner state/diagnostics | Per-bar delayed scanner values retained for 60 days; PWA candlesticks now read OHLC from `candles`. |
 | `set_holidays` | Owner | SET session gate | Thai market closures; update annually from an authoritative calendar. |
 | `settings` | Owner and server jobs | Edge Functions and SQL jobs | Tickers, kill switches, dry-run flag, alert directions, session settings and push TTL. |
 
@@ -50,12 +50,13 @@ exist unless that safeguard is explicitly overridden.
 4. A two-minute sweep retries transiently failed pending deliveries; the watchdog detects stale
    components; weekly cleanup enforces retention.
 
-### Future SET flow
+### SET and Bitcoin chart flow
 
-TradingView or another approved SET source writes the same normalized `alerts` shape and updates
-`set_state`/`set_macd_history`. `source`, `symbol`, `timeframe`, `direction`, `bar_time` and the
-deterministic event id prevent duplicates. Adding SET therefore does not require another PWA or
-notification system.
+TradingView webhook alerts write the normalized `alerts` shape while the delayed scanner maintains
+`set_state`/`set_macd_history`. The `market-candles` Edge Function independently stores the nine SET
+M15 OHLC series and Binance BTCUSDT M10/M15 in `candles`; cron gates SET by its Bangkok session and
+keeps Bitcoin running 24/7. `source`, `symbol`, `timeframe`, `direction`, `bar_time`, and deterministic
+event IDs prevent duplicate notifications.
 
 ## Data deliberately kept off Supabase
 
