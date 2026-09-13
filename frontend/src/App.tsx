@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import QRCode from "qrcode";
 import { AlertRecord, CandleSeries, PublicConfig, SetTickerState, StatusResponse, TimeframeState } from "./api";
 import { createBackend } from "./backend";
-import { CandleChart } from "./charts";
+import { CandleChart, DEFAULT_INDICATORS, INDICATORS, orderIndicators, type IndicatorKey } from "./charts";
 
 const backend = createBackend();
 const BITCOIN_SYMBOL = "BINANCE:BTCUSDT";
@@ -320,6 +320,15 @@ export default function App() {
     return ["gold:10", "gold:15", "gold:10", "gold:15"];
   });
   const [expanded, setExpanded] = useState(false);
+  const [indicators, setIndicators] = useState<IndicatorKey[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("aurum-indicators") || "null");
+      if (Array.isArray(saved)) return orderIndicators(saved.filter((value) => typeof value === "string"));
+    } catch {
+      // A corrupt entry just falls through to the default pair.
+    }
+    return DEFAULT_INDICATORS;
+  });
   const [candleSeries, setCandleSeries] = useState<Record<string, CandleSeries>>({});
   const [chartError, setChartError] = useState("");
   const [setTickers, setSetTickers] = useState<SetTickerState[]>([]);
@@ -423,6 +432,7 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    localStorage.setItem("aurum-indicators", JSON.stringify(indicators));
     localStorage.setItem("aurum-layout", String(layout));
     localStorage.setItem("aurum-panes", JSON.stringify(panes));
   }, [layout, panes]);
@@ -735,6 +745,7 @@ export default function App() {
         forming={forming}
         priceStatus={instrument.kind === "set" ? "delayed" : "closed"}
         height={paneHeight}
+        indicators={indicators}
       />
     );
   };
@@ -945,6 +956,26 @@ export default function App() {
             {expanded && (
               <button className="ghost expanded-close" onClick={toggleExpanded} aria-label="Exit full screen">Close</button>
             )}
+            <div className="indicator-picker" role="group" aria-label="Indicators">
+              {INDICATORS.map((indicator) => {
+                const on = indicators.includes(indicator.key);
+                return (
+                  <button
+                    key={indicator.key}
+                    type="button"
+                    className={on ? "chip on" : "chip"}
+                    aria-pressed={on}
+                    onClick={() => setIndicators((previous) => orderIndicators(
+                      previous.includes(indicator.key)
+                        ? previous.filter((key) => key !== indicator.key)
+                        : [...previous, indicator.key]
+                    ))}
+                  >
+                    {indicator.label}
+                  </button>
+                );
+              })}
+            </div>
             <div className="chart-grid" data-panes={layout}>
               {visiblePanes.map((paneKey, index) => (
                 <div className="chart-cell" key={`${index}:${paneKey}`}>

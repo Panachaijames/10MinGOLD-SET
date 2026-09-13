@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -52,6 +52,117 @@ export function wilderRsi(closes: number[], length = 14): (number | null)[] {
   return out;
 }
 
+// ---------------------------------------------------------------- indicator maths
+// Everything here runs in the browser over the candles the chart already holds, so adding an
+// indicator costs no database column, no watcher change and no extra request.
+
+/** Exponential moving average, alpha = 2/(n+1), seeded with the simple mean of the first n. */
+export function ema(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  if (values.length < length || length < 1) return out;
+  const alpha = 2 / (length + 1);
+  let current = values.slice(0, length).reduce((sum, value) => sum + value, 0) / length;
+  out[length - 1] = current;
+  for (let i = length; i < values.length; i++) {
+    current = values[i] * alpha + current * (1 - alpha);
+    out[i] = current;
+  }
+  return out;
+}
+
+/** Simple moving average. */
+export function sma(values: number[], length: number): (number | null)[] {
+  const out: (number | null)[] = new Array(values.length).fill(null);
+  if (length < 1) return out;
+  let running = 0;
+  for (let i = 0; i < values.length; i++) {
+    running += values[i];
+    if (i >= length) running -= values[i - length];
+    if (i >= length - 1) out[i] = running / length;
+  }
+  return out;
+}
+
+/** Bollinger bands on a POPULATION standard deviation, which is what charting packages use. */
+export function bollinger(values: number[], length = 20, multiplier = 2) {
+  const middle = sma(values, length);
+  const upper: (number | null)[] = new Array(values.length).fill(null);
+  const lower: (number | null)[] = new Array(values.length).fill(null);
+  for (let i = length - 1; i < values.length; i++) {
+    const mean = middle[i];
+    if (mean == null) continue;
+    const window = values.slice(i - length + 1, i + 1);
+    const variance = window.reduce((sum, value) => sum + (value - mean) ** 2, 0) / length;
+    const deviation = Math.sqrt(variance) * multiplier;
+    upper[i] = mean + deviation;
+    lower[i] = mean - deviation;
+  }
+  return { upper, middle, lower };
+}
+
+/** Stochastic oscillator: %K over `length`, smoothed, with %D the moving average of %K. */
+export function stochastic(highs: number[], lows: number[], closes: number[], length = 14, smoothK = 3, smoothD = 3) {
+  const rawK: (number | null)[] = new Array(closes.length).fill(null);
+  for (let i = length - 1; i < closes.length; i++) {
+    const highest = Math.max(...highs.slice(i - length + 1, i + 1));
+    const lowest = Math.min(...lows.slice(i - length + 1, i + 1));
+    const span = highest - lowest;
+    rawK[i] = span === 0 ? 100 : ((closes[i] - lowest) / span) * 100;
+  }
+  const smooth = (input: (number | null)[], window: number): (number | null)[] => {
+    const out: (number | null)[] = new Array(input.length).fill(null);
+    for (let i = 0; i < input.length; i++) {
+      const slice = input.slice(Math.max(0, i - window + 1), i + 1);
+      if (slice.length < window || slice.some((value) => value == null)) continue;
+      out[i] = (slice as number[]).reduce((sum, value) => sum + value, 0) / window;
+    }
+    return out;
+  };
+  const k = smooth(rawK, smoothK);
+  return { k, d: smooth(k, smoothD) };
+}
+
+/** Average true range with Wilder smoothing, the same recursion RSI uses. */
+export function atr(highs: number[], lows: number[], closes: number[], length = 14): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null);
+  if (closes.length <= length) return out;
+  const trueRanges: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    trueRanges.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    ));
+  }
+  let current = trueRanges.slice(0, length).reduce((sum, value) => sum + value, 0) / length;
+  out[length] = current;
+  for (let i = length; i < trueRanges.length; i++) {
+    current = (current * (length - 1) + trueRanges[i]) / length;
+    out[i + 1] = current;
+  }
+  return out;
+}
+
+export type IndicatorKey = "ema20" | "ema50" | "bollinger" | "macd" | "rsi" | "stoch" | "atr";
+
+/** `overlay` indicators draw on the price pane; the rest each get a pane of their own. */
+export const INDICATORS: { key: IndicatorKey; label: string; overlay: boolean }[] = [
+  { key: "ema20", label: "EMA 20", overlay: true },
+  { key: "ema50", label: "EMA 50", overlay: true },
+  { key: "bollinger", label: "Bollinger 20/2", overlay: true },
+  { key: "macd", label: "MACD 12/26/9", overlay: false },
+  { key: "rsi", label: "RSI 14", overlay: false },
+  { key: "stoch", label: "Stochastic 14/3/3", overlay: false },
+  { key: "atr", label: "ATR 14", overlay: false }
+];
+
+export const DEFAULT_INDICATORS: IndicatorKey[] = ["macd", "rsi"];
+
+/** Keep the configured order and drop anything unknown, so a stale saved list cannot break a chart. */
+export function orderIndicators(keys: string[]): IndicatorKey[] {
+  return INDICATORS.filter((indicator) => keys.includes(indicator.key)).map((indicator) => indicator.key);
+}
+
 const RSI_LENGTH = 14;
 
 const COLORS = {
@@ -61,6 +172,12 @@ const COLORS = {
   signal: "#ff6d00",
   rsi: "#b388ff",
   band: "rgba(179, 136, 255, 0.35)",
+  ema20: "#ffd166",
+  ema50: "#4dd0e1",
+  bollinger: "rgba(142, 163, 157, 0.75)",
+  stochK: "#f06292",
+  stochD: "#9575cd",
+  atr: "#80cbc4",
   text: "#8ea39d",
   grid: "rgba(142, 163, 157, 0.08)",
   crosshair: "rgba(41, 98, 255, 0.5)"
@@ -115,19 +232,28 @@ interface CandleChartProps {
   /** How to describe the newest price when there is no forming candle. */
   priceStatus?: "closed" | "delayed";
   height?: number;
+  /** Which indicators to draw; overlays share the price pane, the rest each get their own. */
+  indicators?: IndicatorKey[];
 }
 
-/** Candlesticks on top, MACD (histogram + MACD + signal) below, alerts as arrows on the candles. */
-export function CandleChart({ candles, alerts, symbol, timeframe, forming, priceStatus = "closed", height = 560 }: CandleChartProps) {
+/**
+ * Candlesticks with whichever indicators the user has switched on. Overlays draw on the price
+ * pane; every other indicator gets a pane of its own, in the order INDICATORS lists them.
+ */
+export function CandleChart({ candles, alerts, symbol, timeframe, forming, priceStatus = "closed", height = 560, indicators = DEFAULT_INDICATORS }: CandleChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
+  const enabled = useMemo(() => orderIndicators(indicators), [indicators]);
+  const enabledKey = enabled.join(",");
+  // Changing the indicator set has to rebuild the chart, which throws away every series. The
+  // epoch makes the data effect run again afterwards, so the new series are filled rather than
+  // left empty the way a layout change used to leave them.
+  const [epoch, setEpoch] = useState(0);
   const series = useRef<{
     candles: ISeriesApi<"Candlestick">;
-    hist: ISeriesApi<"Histogram">;
-    macd: ISeriesApi<"Line">;
-    signal: ISeriesApi<"Line">;
-    rsi: ISeriesApi<"Line">;
     markers: ISeriesMarkersPluginApi<Time>;
+    hist: ISeriesApi<"Histogram"> | null;
+    lines: Partial<Record<string, ISeriesApi<"Line">>>;
   } | null>(null);
 
   useEffect(() => {
@@ -142,42 +268,91 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
       priceLineVisible: true,
       lastValueVisible: true
     });
-    const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false }, 1);
-    const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
-    const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
-    // Pane 2: RSI. The scale is pinned to 0-100 so the 30/70 guides sit where the eye
-    // expects them instead of drifting with whatever range the visible bars happen to cover.
-    const rsi = api.addSeries(LineSeries, {
-      color: COLORS.rsi,
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })
-    }, 2);
-    for (const level of [70, 30]) {
-      rsi.createPriceLine({ price: level, color: COLORS.band, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+    const lines: Partial<Record<string, ISeriesApi<"Line">>> = {};
+    let hist: ISeriesApi<"Histogram"> | null = null;
+    const fine = { type: "price" as const, precision: 4, minMove: 0.0001 };
+    const percent = { type: "price" as const, precision: 1, minMove: 0.1 };
+    const bounded = () => ({ priceRange: { minValue: 0, maxValue: 100 } });
+
+    if (enabled.includes("ema20")) {
+      lines.ema20 = api.addSeries(LineSeries, { color: COLORS.ema20, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }, 0);
     }
+    if (enabled.includes("ema50")) {
+      lines.ema50 = api.addSeries(LineSeries, { color: COLORS.ema50, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }, 0);
+    }
+    if (enabled.includes("bollinger")) {
+      for (const key of ["bbUpper", "bbMiddle", "bbLower"]) {
+        lines[key] = api.addSeries(LineSeries, {
+          color: COLORS.bollinger,
+          lineWidth: 1,
+          lineStyle: key === "bbMiddle" ? 0 : 2,
+          priceLineVisible: false,
+          lastValueVisible: false
+        }, 0);
+      }
+    }
+
+    let pane = 1;
+    for (const key of enabled) {
+      if (INDICATORS.find((indicator) => indicator.key === key)?.overlay) continue;
+      if (key === "macd") {
+        hist = api.addSeries(HistogramSeries, { priceFormat: fine, priceLineVisible: false, lastValueVisible: false }, pane);
+        lines.macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: fine }, pane);
+        lines.signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: fine }, pane);
+      } else if (key === "rsi") {
+        // Pinned to 0-100 so the 30/70 guides sit where the eye expects them rather than
+        // drifting with whatever range the visible bars happen to cover.
+        const rsiSeries = api.addSeries(LineSeries, { color: COLORS.rsi, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: percent, autoscaleInfoProvider: bounded }, pane);
+        for (const level of [70, 30]) {
+          rsiSeries.createPriceLine({ price: level, color: COLORS.band, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+        }
+        lines.rsi = rsiSeries;
+      } else if (key === "stoch") {
+        const stochKSeries = api.addSeries(LineSeries, { color: COLORS.stochK, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: percent, autoscaleInfoProvider: bounded }, pane);
+        for (const level of [80, 20]) {
+          stochKSeries.createPriceLine({ price: level, color: COLORS.band, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+        }
+        lines.stochK = stochKSeries;
+        lines.stochD = api.addSeries(LineSeries, { color: COLORS.stochD, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, priceFormat: percent, autoscaleInfoProvider: bounded }, pane);
+      } else if (key === "atr") {
+        lines.atr = api.addSeries(LineSeries, { color: COLORS.atr, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: fine }, pane);
+      }
+      pane++;
+    }
+
     const panes = api.panes();
     panes[0]?.setStretchFactor(2.6);
-    panes[1]?.setStretchFactor(1);
-    panes[2]?.setStretchFactor(1);
+    for (let index = 1; index < panes.length; index++) panes[index]?.setStretchFactor(1);
     const markers = createSeriesMarkers(candleSeries, []);
     chart.current = api;
-    series.current = { candles: candleSeries, hist, macd, signal, rsi, markers };
+    series.current = { candles: candleSeries, markers, hist, lines };
+    setEpoch((value) => value + 1);
     return () => {
       api.remove();
       chart.current = null;
       series.current = null;
     };
     // Deliberately NOT keyed on height: a layout change only resizes the cell, and tearing the
-    // chart down would drop every series (and the user's zoom) while the data effects below,
-    // whose inputs did not change, would never refill them.
-  }, []);
+    // chart down would drop every series along with the user's zoom and scroll position.
+  }, [enabledKey]);
 
   useResize(container, chart);
   useEffect(() => { chart.current?.applyOptions({ height }); }, [height]);
   const newestTime = useRef<string | null>(null);
+
+  const values = useMemo(() => {
+    const closes = candles.map((candle) => candle.close);
+    const highs = candles.map((candle) => candle.high);
+    const lows = candles.map((candle) => candle.low);
+    return {
+      ema20: ema(closes, 20),
+      ema50: ema(closes, 50),
+      bands: bollinger(closes, 20, 2),
+      rsi: wilderRsi(closes, RSI_LENGTH),
+      stoch: stochastic(highs, lows, closes, 14, 3, 3),
+      atr: atr(highs, lows, closes, 14)
+    };
+  }, [candles]);
 
   useEffect(() => {
     const current = series.current;
@@ -201,19 +376,29 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
       }
     }
     current.candles.setData(candleData);
-    current.hist.setData(
+
+    /** Points for one indicator, dropping the leading bars where it has not warmed up yet. */
+    const lineData = (source: (number | null)[]) =>
+      candles
+        .map((candle, index) => ({ time: toChartTime(candle.time), value: source[index] }))
+        .filter((point): point is { time: UTCTimestamp; value: number } => point.value != null);
+
+    current.hist?.setData(
       candles
         .filter((c) => c.histogram != null)
         .map((c) => ({ time: toChartTime(c.time), value: c.histogram as number, color: (c.histogram as number) >= 0 ? "rgba(113,225,193,0.55)" : "rgba(255,143,123,0.55)" }))
     );
-    current.macd.setData(candles.filter((c) => c.macd != null).map((c) => ({ time: toChartTime(c.time), value: c.macd as number })));
-    current.signal.setData(candles.filter((c) => c.signal != null).map((c) => ({ time: toChartTime(c.time), value: c.signal as number })));
-    const rsiValues = wilderRsi(candles.map((c) => c.close), RSI_LENGTH);
-    current.rsi.setData(
-      candles
-        .map((c, i) => ({ time: toChartTime(c.time), value: rsiValues[i] }))
-        .filter((point): point is { time: UTCTimestamp; value: number } => point.value != null)
-    );
+    current.lines.macd?.setData(candles.filter((c) => c.macd != null).map((c) => ({ time: toChartTime(c.time), value: c.macd as number })));
+    current.lines.signal?.setData(candles.filter((c) => c.signal != null).map((c) => ({ time: toChartTime(c.time), value: c.signal as number })));
+    current.lines.ema20?.setData(lineData(values.ema20));
+    current.lines.ema50?.setData(lineData(values.ema50));
+    current.lines.bbUpper?.setData(lineData(values.bands.upper));
+    current.lines.bbMiddle?.setData(lineData(values.bands.middle));
+    current.lines.bbLower?.setData(lineData(values.bands.lower));
+    current.lines.rsi?.setData(lineData(values.rsi));
+    current.lines.stochK?.setData(lineData(values.stoch.k));
+    current.lines.stochD?.setData(lineData(values.stoch.d));
+    current.lines.atr?.setData(lineData(values.atr));
 
     const candleTimes = new Set(candles.map((c) => c.time));
     const markers: SeriesMarker<Time>[] = alerts
@@ -236,7 +421,7 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
     newestTime.current = newest;
     const timeScale = chart.current?.timeScale();
     if (timeScale && (firstLoad || (advanced && timeScale.scrollPosition() >= 0))) timeScale.scrollToRealTime();
-  }, [candles, alerts, symbol, timeframe]);
+  }, [candles, alerts, symbol, timeframe, values, epoch]);
 
   // Live in-place update for forming candle ticks
   useEffect(() => {
@@ -256,14 +441,17 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
   }, [forming]);
 
   const last = candles.length ? candles[candles.length - 1] : null;
+  const lastIndex = candles.length - 1;
   const livePrice = forming ? forming.close : last?.close;
   const live = Boolean(forming);
   const priceLabel = live ? "LIVE" : priceStatus === "delayed" ? "DELAYED CLOSE" : "CLOSED";
-  const lastRsi = useMemo(() => {
-    const values = wilderRsi(candles.map((c) => c.close), RSI_LENGTH);
-    return values.length ? values[values.length - 1] : null;
-  }, [candles]);
+  const lastRsi = lastIndex >= 0 ? values.rsi[lastIndex] : null;
   const rsiTone = lastRsi == null ? COLORS.rsi : lastRsi >= 70 ? COLORS.down : lastRsi <= 30 ? COLORS.up : COLORS.rsi;
+  const reading = (source: (number | null)[], digits: number) => {
+    const value = lastIndex >= 0 ? source[lastIndex] : null;
+    return value == null ? "—" : value.toFixed(digits);
+  };
+
   return (
     <div className="chart-wrap">
       <div className="chart-legend">
@@ -272,10 +460,25 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
             {live && <span className="live-dot" />} {priceLabel} {livePrice.toFixed(2)}
           </span>
         )}
-        <span><i style={{ background: COLORS.macd }} /> MACD {last?.macd?.toFixed(4) ?? "—"}</span>
-        <span><i style={{ background: COLORS.signal }} /> Signal {last?.signal?.toFixed(4) ?? "—"}</span>
-        <span><i style={{ background: (last?.histogram ?? 0) >= 0 ? COLORS.up : COLORS.down }} /> Hist {last?.histogram?.toFixed(4) ?? "—"}</span>
-        <span><i style={{ background: rsiTone }} /> RSI({RSI_LENGTH}) {lastRsi?.toFixed(1) ?? "—"}{lastRsi == null ? "" : lastRsi >= 70 ? " overbought" : lastRsi <= 30 ? " oversold" : ""}</span>
+        {enabled.includes("ema20") && <span><i style={{ background: COLORS.ema20 }} /> EMA20 {reading(values.ema20, 2)}</span>}
+        {enabled.includes("ema50") && <span><i style={{ background: COLORS.ema50 }} /> EMA50 {reading(values.ema50, 2)}</span>}
+        {enabled.includes("bollinger") && (
+          <span><i style={{ background: COLORS.bollinger }} /> BB {reading(values.bands.lower, 2)} / {reading(values.bands.upper, 2)}</span>
+        )}
+        {enabled.includes("macd") && (
+          <>
+            <span><i style={{ background: COLORS.macd }} /> MACD {last?.macd?.toFixed(4) ?? "—"}</span>
+            <span><i style={{ background: COLORS.signal }} /> Signal {last?.signal?.toFixed(4) ?? "—"}</span>
+            <span><i style={{ background: (last?.histogram ?? 0) >= 0 ? COLORS.up : COLORS.down }} /> Hist {last?.histogram?.toFixed(4) ?? "—"}</span>
+          </>
+        )}
+        {enabled.includes("rsi") && (
+          <span><i style={{ background: rsiTone }} /> RSI(14) {lastRsi?.toFixed(1) ?? "—"}{lastRsi == null ? "" : lastRsi >= 70 ? " overbought" : lastRsi <= 30 ? " oversold" : ""}</span>
+        )}
+        {enabled.includes("stoch") && (
+          <span><i style={{ background: COLORS.stochK }} /> Stoch {reading(values.stoch.k, 1)} / {reading(values.stoch.d, 1)}</span>
+        )}
+        {enabled.includes("atr") && <span><i style={{ background: COLORS.atr }} /> ATR(14) {reading(values.atr, 2)}</span>}
         <span className="chart-legend-note">{candles.length} closed candles · times in Bangkok{last?.provisional ? " · last candle closed by clock" : ""}</span>
       </div>
       <div ref={container} className="chart-surface" />
