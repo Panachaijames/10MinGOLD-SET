@@ -21,11 +21,46 @@ import { AlertRecord, Candle, SetMacdPoint } from "./api";
 const BANGKOK_OFFSET_S = 7 * 3600;
 const toChartTime = (iso: string): UTCTimestamp => (Math.floor(Date.parse(iso) / 1000) + BANGKOK_OFFSET_S) as UTCTimestamp;
 
+/**
+ * Wilder's RSI, the same recursion as TradingView's ta.rsi: seed the average gain and loss
+ * with a simple mean over the first `length` changes, then smooth each later bar by
+ * (prev * (length - 1) + current) / length. Values before the seed are null, not zero.
+ *
+ * Computed here in the browser from the closes the chart already holds, so adding an
+ * indicator costs no database column, no watcher change, and no extra API call.
+ */
+export function wilderRsi(closes: number[], length = 14): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null);
+  if (closes.length <= length) return out;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= length; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change >= 0) gain += change;
+    else loss -= change;
+  }
+  gain /= length;
+  loss /= length;
+  const rsiAt = () => (loss === 0 ? 100 : 100 - 100 / (1 + gain / loss));
+  out[length] = rsiAt();
+  for (let i = length + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    gain = (gain * (length - 1) + Math.max(0, change)) / length;
+    loss = (loss * (length - 1) + Math.max(0, -change)) / length;
+    out[i] = rsiAt();
+  }
+  return out;
+}
+
+const RSI_LENGTH = 14;
+
 const COLORS = {
   up: "#71e1c1",
   down: "#ff8f7b",
   macd: "#2962ff",
   signal: "#ff6d00",
+  rsi: "#b388ff",
+  band: "rgba(179, 136, 255, 0.35)",
   text: "#8ea39d",
   grid: "rgba(142, 163, 157, 0.08)",
   crosshair: "rgba(41, 98, 255, 0.5)"
@@ -74,7 +109,7 @@ interface CandleChartProps {
 }
 
 /** Candlesticks on top, MACD (histogram + MACD + signal) below, alerts as arrows on the candles. */
-export function CandleChart({ candles, alerts, symbol, timeframe, forming, height = 460 }: CandleChartProps) {
+export function CandleChart({ candles, alerts, symbol, timeframe, forming, height = 560 }: CandleChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<{
@@ -82,6 +117,7 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
     hist: ISeriesApi<"Histogram">;
     macd: ISeriesApi<"Line">;
     signal: ISeriesApi<"Line">;
+    rsi: ISeriesApi<"Line">;
     markers: ISeriesMarkersPluginApi<Time>;
   } | null>(null);
 
@@ -100,12 +136,26 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
     const hist = api.addSeries(HistogramSeries, { priceFormat: { type: "price", precision: 4, minMove: 0.0001 }, priceLineVisible: false, lastValueVisible: false }, 1);
     const macd = api.addSeries(LineSeries, { color: COLORS.macd, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
     const signal = api.addSeries(LineSeries, { color: COLORS.signal, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 4, minMove: 0.0001 } }, 1);
+    // Pane 2: RSI. The scale is pinned to 0-100 so the 30/70 guides sit where the eye
+    // expects them instead of drifting with whatever range the visible bars happen to cover.
+    const rsi = api.addSeries(LineSeries, {
+      color: COLORS.rsi,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } })
+    }, 2);
+    for (const level of [70, 30]) {
+      rsi.createPriceLine({ price: level, color: COLORS.band, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+    }
     const panes = api.panes();
-    panes[0]?.setStretchFactor(2.2);
+    panes[0]?.setStretchFactor(2.6);
     panes[1]?.setStretchFactor(1);
+    panes[2]?.setStretchFactor(1);
     const markers = createSeriesMarkers(candleSeries, []);
     chart.current = api;
-    series.current = { candles: candleSeries, hist, macd, signal, markers };
+    series.current = { candles: candleSeries, hist, macd, signal, rsi, markers };
     return () => {
       api.remove();
       chart.current = null;
@@ -145,6 +195,12 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
     );
     current.macd.setData(candles.filter((c) => c.macd != null).map((c) => ({ time: toChartTime(c.time), value: c.macd as number })));
     current.signal.setData(candles.filter((c) => c.signal != null).map((c) => ({ time: toChartTime(c.time), value: c.signal as number })));
+    const rsiValues = wilderRsi(candles.map((c) => c.close), RSI_LENGTH);
+    current.rsi.setData(
+      candles
+        .map((c, i) => ({ time: toChartTime(c.time), value: rsiValues[i] }))
+        .filter((point): point is { time: UTCTimestamp; value: number } => point.value != null)
+    );
 
     const candleTimes = new Set(candles.map((c) => c.time));
     const markers: SeriesMarker<Time>[] = alerts
@@ -188,6 +244,11 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
 
   const last = candles.length ? candles[candles.length - 1] : null;
   const livePrice = forming ? forming.close : last?.close;
+  const lastRsi = useMemo(() => {
+    const values = wilderRsi(candles.map((c) => c.close), RSI_LENGTH);
+    return values.length ? values[values.length - 1] : null;
+  }, [candles]);
+  const rsiTone = lastRsi == null ? COLORS.rsi : lastRsi >= 70 ? COLORS.down : lastRsi <= 30 ? COLORS.up : COLORS.rsi;
   return (
     <div className="chart-wrap">
       <div className="chart-legend">
@@ -199,6 +260,7 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, heigh
         <span><i style={{ background: COLORS.macd }} /> MACD {last?.macd?.toFixed(4) ?? "—"}</span>
         <span><i style={{ background: COLORS.signal }} /> Signal {last?.signal?.toFixed(4) ?? "—"}</span>
         <span><i style={{ background: (last?.histogram ?? 0) >= 0 ? COLORS.up : COLORS.down }} /> Hist {last?.histogram?.toFixed(4) ?? "—"}</span>
+        <span><i style={{ background: rsiTone }} /> RSI({RSI_LENGTH}) {lastRsi?.toFixed(1) ?? "—"}{lastRsi == null ? "" : lastRsi >= 70 ? " overbought" : lastRsi <= 30 ? " oversold" : ""}</span>
         <span className="chart-legend-note">{candles.length} closed candles · times in Bangkok{last?.provisional ? " · last candle closed by clock" : ""}</span>
       </div>
       <div ref={container} className="chart-surface" />

@@ -247,13 +247,20 @@ deduplication and synchronization contract.
    `aurum-set-scan` polls at :01/:16/:31/:46/:56 UTC inside SET sessions only (gate in
    `ops.set_scan_gate()`), and `set_holidays` is editable from SQL.
 
-7. **Gold cloud failover.** `gold-scan` keeps alerts arriving while the laptop and MT5 are off. The
-   cron job `aurum-gold-scan` fires a minute after each candle boundary (:01 :11 :16 :21 :31 :41 :46
-   :51 UTC) and `ops.gold_scan_gate()` only posts to the function when `heartbeats.gold_mt5` has been
-   quiet for `gold_cloud_takeover_seconds`, so the broker feed always wins when it is available.
-   Leave `gold_cloud_dry_run = true` for a session and read `heartbeats.gold_cloud.details.summary`,
-   then set `gold_cloud_dry_run = false` and `gold_cloud_enabled = true`. Force a one-off run with
+7. **Gold cloud failover.** `gold-scan` keeps alerts arriving while the laptop and MT5 are off.
+   `ops.gold_scan_gate()` only posts to the function when `heartbeats.gold_mt5` has been quiet for
+   `gold_cloud_takeover_seconds`, so the broker feed always wins when it is available. Leave
+   `gold_cloud_dry_run = true` for a session and read `heartbeats.gold_cloud.details.summary`, then
+   set `gold_cloud_dry_run = false` and `gold_cloud_enabled = true`. Force a one-off run with
    `?force=1`.
+
+   Two cron jobs drive it. `aurum-gold-scan` fires ON each candle boundary (:00 :10 :15 :20 :30 :40
+   :45 :50 UTC) and the function itself waits out `gold_cloud_settle_ms` before reading the feed, so
+   an alert row usually lands about four seconds after the candle closes rather than a minute later.
+   `aurum-gold-scan-catchup` runs a minute behind and only picks up bars the fast run missed: a
+   timeframe counts as handled once its `candles` row exists, so a failed or slow run is retried and
+   a successful one is never fetched twice. Watch `fetches` and `waited_ms` in the heartbeat summary
+   for a session; if `fetches` is always 1, `gold_cloud_settle_ms` can come down towards 1000.
 
    Its candles come from Twelve Data spot gold, not from the broker, so it is a stand-in and not a
    copy. Measured over four trading days on M15, the broker feed produced 26 crosses and the cloud

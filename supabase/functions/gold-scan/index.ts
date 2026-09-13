@@ -6,6 +6,10 @@
 // so this source fires somewhat more crosses than MT5 does on the same window. Invoked by
 // pg_cron through ops.gold_scan_gate(), which only posts here when the laptop heartbeat has
 // gone quiet, so the two producers never race for the same bar. Manual run: ?force=1.
+//
+// Timing: cron fires ON the candle boundary and this function does the sub-minute waiting,
+// which puts an alert in the table a handful of seconds after the candle closes rather than
+// the best part of a minute. A second cron run a minute later re-tries anything missed.
 import { isSecretCaller, unauthorized } from "../_shared/auth.ts";
 import { adminClient, getSetting, heartbeat } from "../_shared/db.ts";
 import { bangkokClock, crossDirection, eventId, macdSeries, type Direction } from "../_shared/macd.ts";
@@ -15,6 +19,14 @@ const FEED_SYMBOL = "XAU/USD";
 // MACD(12,26,9) needs a long warm-up before the EMA seed washes out; the laptop uses 260 too.
 const MIN_CLOSED_BARS = 260;
 const CANDLE_HISTORY = 200;
+// cron can only fire on whole minutes, so it fires ON the boundary and the waiting happens
+// here: settle, then re-ask a few times if the provider has not published the closed bar yet.
+const RETRY_DELAYS_MS = [3_000, 5_000, 8_000];
+// Whole-invocation budget for waiting. It stays well inside the caller's timeout, and a bar
+// that misses it is simply left for the catch-up run rather than risking a killed isolate.
+const WAIT_BUDGET_MS = 25_000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface Bar {
   openMs: number;
@@ -97,6 +109,47 @@ async function loadClosedBars(timeframe: number, nowMs: number): Promise<Bar[]> 
   throw new Error(`Unsupported gold timeframe: ${timeframe}`);
 }
 
+/** Open time of the candle that has just closed: the newest boundary, minus one timeframe. */
+export function expectedClosedBarOpen(timeframe: number, nowMs: number): number {
+  const step = timeframe * 60_000;
+  // cron can fire a moment early, so anything within five seconds of a boundary is past it.
+  return Math.floor((nowMs + 5_000) / step) * step - step;
+}
+
+/**
+ * Wait for the candle that just closed, then return the series ending on it.
+ *
+ * Asking the instant the boundary passes risks reading a close the provider is still
+ * aggregating, so the first fetch waits out a settle window; after that the bar is either
+ * there or it is re-asked a few times. Returns null when it never appeared, which leaves no
+ * candle row behind, so the catch-up run a minute later tries the same bar again.
+ */
+export async function awaitClosedBar(
+  timeframe: number,
+  expectedOpenMs: number,
+  settleMs: number,
+  budgetEndsAt: number,
+  entry: Record<string, unknown>,
+  load: (timeframe: number, nowMs: number) => Promise<Bar[]> = loadClosedBars,
+): Promise<Bar[] | null> {
+  const closedAt = expectedOpenMs + timeframe * 60_000;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    const waitMs = attempt === 0
+      ? Math.max(0, closedAt + settleMs - Date.now())
+      : RETRY_DELAYS_MS[attempt - 1];
+    if (Date.now() + waitMs > budgetEndsAt) break;
+    if (waitMs > 0) await sleep(waitMs);
+    const bars = await load(timeframe, Date.now());
+    entry.fetches = attempt + 1;
+    if (bars.length && bars[bars.length - 1].openMs === expectedOpenMs) {
+      entry.waited_ms = Date.now() - closedAt;
+      return bars;
+    }
+    if (Date.now() >= budgetEndsAt) break;
+  }
+  return null;
+}
+
 function renderAlert(symbol: string, timeframe: number, direction: Direction, bar: Bar, point: {
   macd: number;
   signal: number;
@@ -143,16 +196,27 @@ Deno.serve(async (req) => {
   const dryRun = await getSetting<boolean>(client, "gold_cloud_dry_run", true);
   const symbol = await getSetting<string>(client, "gold_symbol", "GOLD.wis");
   const maxAgeSeconds = await getSetting<number>(client, "gold_cloud_max_age_seconds", 900);
+  const settleMs = await getSetting<number>(client, "gold_cloud_settle_ms", 3000);
   const directions = new Set(await getSetting<Direction[]>(client, "alert_directions", ["bullish", "bearish"]));
   const requested: number[] = Array.isArray(body?.timeframes) && body.timeframes.length
     ? body.timeframes.map(Number)
     : [10, 15];
 
+  const budgetEndsAt = startedAt + WAIT_BUDGET_MS;
   const summary: Record<string, unknown>[] = [];
   try {
     for (const timeframe of requested) {
       const entry: Record<string, unknown> = { timeframe };
-      const bars = await loadClosedBars(timeframe, Date.now());
+      const expectedOpenMs = expectedClosedBarOpen(timeframe, Date.now());
+      entry.expected_bar_open = new Date(expectedOpenMs).toISOString();
+      const bars = await awaitClosedBar(timeframe, expectedOpenMs, settleMs, budgetEndsAt, entry);
+      if (bars === null) {
+        // No candle row is written, so ops.gold_scan_gate() sees the bar as unhandled and the
+        // catch-up cron run asks again a minute later.
+        entry.result = "bar-not-published";
+        summary.push(entry);
+        continue;
+      }
       if (bars.length < MIN_CLOSED_BARS) {
         entry.result = `too-few-bars:${bars.length}`;
         summary.push(entry);
@@ -212,6 +276,7 @@ Deno.serve(async (req) => {
       symbol,
       feed: FEED_SYMBOL,
       dry_run: dryRun,
+      settle_ms: settleMs,
       timeframes: requested,
       duration_ms: Date.now() - startedAt,
       summary,

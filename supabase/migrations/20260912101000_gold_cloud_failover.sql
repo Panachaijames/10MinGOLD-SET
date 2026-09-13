@@ -13,6 +13,7 @@ insert into public.settings (key, value) values
   ('gold_cloud_dry_run',          'true'::jsonb),   -- log crosses without inserting alerts
   ('gold_cloud_takeover_seconds', '180'::jsonb),    -- laptop silence before the cloud takes over
   ('gold_cloud_max_age_seconds',  '900'::jsonb),    -- never alert on a bar that closed long ago
+  ('gold_cloud_settle_ms',        '3000'::jsonb),   -- let the feed finish the candle before reading it
   ('gold_symbol',                 '"GOLD.wis"'::jsonb)
 on conflict (key) do nothing;
 
@@ -37,29 +38,51 @@ begin
   return true;
 end $$;
 
--- Failover gate. Runs a minute after each candle boundary and posts only the timeframes that
--- just closed, which keeps the free Twelve Data quota (800 calls a day) far out of reach.
-create or replace function ops.gold_scan_gate() returns text
+-- Failover gate. The fast job fires ON each candle boundary and the gold-scan function does
+-- the sub-minute waiting itself, so an alert lands seconds after the close instead of a minute
+-- later; the catch-up job runs one minute behind and only picks up what the fast job missed.
+-- A timeframe counts as handled once its candle row exists, which also keeps the free Twelve
+-- Data quota (800 calls a day) far out of reach.
+create or replace function ops.gold_scan_gate(catchup boolean default false) returns text
 language plpgsql as $$
 declare
-  laptop_seen timestamptz := (select last_seen from public.heartbeats where source = 'gold_mt5');
-  quiet_after integer := coalesce((select (value #>> '{}')::integer from public.settings where key = 'gold_cloud_takeover_seconds'), 180);
-  minute_now  integer := extract(minute from now() at time zone 'UTC')::integer;
-  due         smallint[] := array[]::smallint[];
-  request_id  bigint;
+  laptop_seen  timestamptz := (select last_seen from public.heartbeats where source = 'gold_mt5');
+  quiet_after  integer := coalesce((select (value #>> '{}')::integer from public.settings where key = 'gold_cloud_takeover_seconds'), 180);
+  watched      text := coalesce((select value #>> '{}' from public.settings where key = 'gold_symbol'), 'GOLD.wis');
+  boundary     timestamptz := date_trunc('minute', now())
+                              - (case when catchup then interval '1 minute' else interval '0 minutes' end);
+  ref_minute   integer := extract(minute from boundary at time zone 'UTC')::integer;
+  due          smallint[] := array[]::smallint[];
+  frame        smallint;
+  request_id   bigint;
 begin
   if not ops.setting_bool('gold_cloud_enabled', false) then return 'skip:disabled'; end if;
   if not ops.gold_market_open(now()) then return 'skip:market-closed'; end if;
   if laptop_seen is not null and laptop_seen > now() - make_interval(secs => quiet_after) then
     return 'skip:laptop-alive';
   end if;
-  if (minute_now - 1) % 10 = 0 then due := array_append(due, 10::smallint); end if;
-  if (minute_now - 1) % 15 = 0 then due := array_append(due, 15::smallint); end if;
-  if array_length(due, 1) is null then return 'skip:no-bar-closed'; end if;
+
+  foreach frame in array array[10, 15]::smallint[] loop
+    if ref_minute % frame = 0 and not exists (
+         select 1 from public.candles c
+          where c.symbol = watched
+            and c.timeframe = frame
+            and c.bar_time >= boundary - make_interval(mins => frame)
+       )
+    then
+      due := array_append(due, frame);
+    end if;
+  end loop;
+
+  if array_length(due, 1) is null then return 'skip:nothing-due'; end if;
   request_id := ops.invoke_function(
     'gold-scan',
-    jsonb_build_object('reason', 'cron', 'timeframes', to_jsonb(due), 'at', now()),
-    20000
+    jsonb_build_object(
+      'reason', case when catchup then 'catchup' else 'boundary' end,
+      'timeframes', to_jsonb(due),
+      'at', now()
+    ),
+    45000
   );
   return 'posted:' || coalesce(request_id::text, 'null');
 end $$;
@@ -122,6 +145,8 @@ begin
   return format('fired=%s recovered=%s', array_to_string(fired, ','), array_to_string(recovered, ','));
 end $$;
 
--- One minute after every 10- and 15-minute boundary: :01 :11 :16 :21 :31 :41 :46 :51.
+-- On every 10- and 15-minute boundary, then once more a minute later for anything missed.
 select cron.unschedule('aurum-gold-scan') where exists (select 1 from cron.job where jobname = 'aurum-gold-scan');
-select cron.schedule('aurum-gold-scan', '1,11,16,21,31,41,46,51 * * * *', $$select ops.gold_scan_gate()$$);
+select cron.unschedule('aurum-gold-scan-catchup') where exists (select 1 from cron.job where jobname = 'aurum-gold-scan-catchup');
+select cron.schedule('aurum-gold-scan', '0,10,15,20,30,40,45,50 * * * *', $$select ops.gold_scan_gate(false)$$);
+select cron.schedule('aurum-gold-scan-catchup', '1,11,16,21,31,41,46,51 * * * *', $$select ops.gold_scan_gate(true)$$);
