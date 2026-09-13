@@ -198,6 +198,7 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 /* Chart grid: 1, 2 or 4 instruments at once. Two columns is the widest it ever goes, so a
    four-up is 2x2 rather than a row of slivers. */
 .chart-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.badge-age { opacity: .75; font-weight: 500; }
 .indicator-picker { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 12px; }
 .indicator-picker .chip {
   background: transparent; color: var(--muted); border: 1px solid var(--line);

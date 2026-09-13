@@ -39,7 +39,7 @@ function chartInstrumentLabel(paneKey: string, goldSymbol: string): string {
   const instrument = chartInstrument(paneKey, goldSymbol);
   if (!instrument) return paneKey;
   if (instrument.kind === "gold") return `${goldSymbol} · M${instrument.timeframe}`;
-  if (instrument.kind === "bitcoin") return `BTCUSDT · M${instrument.timeframe} · closed`;
+  if (instrument.kind === "bitcoin") return `BTCUSDT · M${instrument.timeframe}`;
   return `${instrument.symbol.replace(/^SET:/, "")} · M15 · delayed`;
 }
 
@@ -696,7 +696,7 @@ export default function App() {
     return [
       ...[10, 15].map((tf) => ({ value: `gold:${tf}`, label: `${goldSymbol} · M${tf}` })),
       ...(backend.kind === "supabase"
-        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · M${tf} · closed` }))
+        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · M${tf}` }))
         : []),
       ...setSymbols.map((symbol) => ({ value: `set:${symbol}`, label: `${symbol.replace(/^SET:/, "")} · M15 · delayed` }))
     ];

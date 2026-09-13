@@ -165,6 +165,16 @@ export function orderIndicators(keys: string[]): IndicatorKey[] {
 
 const RSI_LENGTH = 14;
 
+/** How old the newest candle is, in words. "CLOSED" alone reads as "the market is shut". */
+export function ageLabel(milliseconds: number): string {
+  if (milliseconds < 60_000) return "just now";
+  const minutes = Math.round(milliseconds / 60_000);
+  if (minutes < 90) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 const COLORS = {
   up: "#71e1c1",
   down: "#ff8f7b",
@@ -444,7 +454,11 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
   const lastIndex = candles.length - 1;
   const livePrice = forming ? forming.close : last?.close;
   const live = Boolean(forming);
-  const priceLabel = live ? "LIVE" : priceStatus === "delayed" ? "DELAYED CLOSE" : "CLOSED";
+  // The badge describes the DATA, not the market: Bitcoin never closes, but we still only hold
+  // its closed candles, so "CLOSED" on its own was reading as "this market is shut".
+  const priceLabel = live ? "LIVE" : priceStatus === "delayed" ? "DELAYED CLOSE" : "LAST CLOSE";
+  const newestCloseMs = last ? Date.parse(last.time) + timeframe * 60_000 : null;
+  const freshness = live || newestCloseMs === null ? null : ageLabel(Date.now() - newestCloseMs);
   const lastRsi = lastIndex >= 0 ? values.rsi[lastIndex] : null;
   const rsiTone = lastRsi == null ? COLORS.rsi : lastRsi >= 70 ? COLORS.down : lastRsi <= 30 ? COLORS.up : COLORS.rsi;
   const reading = (source: (number | null)[], digits: number) => {
@@ -458,6 +472,7 @@ export function CandleChart({ candles, alerts, symbol, timeframe, forming, price
         {livePrice != null && (
           <span className={`price-badge ${live ? "live" : priceStatus}`}>
             {live && <span className="live-dot" />} {priceLabel} {livePrice.toFixed(2)}
+            {freshness && <span className="badge-age"> · {freshness}</span>}
           </span>
         )}
         {enabled.includes("ema20") && <span><i style={{ background: COLORS.ema20 }} /> EMA20 {reading(values.ema20, 2)}</span>}
