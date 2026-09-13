@@ -404,6 +404,11 @@ verify_jwt = false
 
 # TradingView cannot send a Supabase JWT or any custom header, so this one authenticates the
 # caller with its own shared secret (TV_WEBHOOK_SECRET) carried in the alert body.
+# The caller presents their own user JWT, which this function verifies itself so it can tell a
+# guest without a session from one with a bad passcode.
+[functions.access-code]
+verify_jwt = false
+
 [functions.tv-webhook]
 verify_jwt = false
 

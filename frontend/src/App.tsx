@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { AlertRecord, CandleSeries, PublicConfig, SetTickerState, StatusResponse, TimeframeState } from "./api";
 import { createBackend } from "./backend";
 import { CandleChart, DEFAULT_INDICATORS, INDICATORS, orderIndicators, type IndicatorKey } from "./charts";
+import type { AccessCode, AccessMember } from "./backend";
 
 const backend = createBackend();
 const BITCOIN_SYMBOL = "BINANCE:BTCUSDT";
@@ -296,6 +297,13 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [passwordDraft, setPasswordDraft] = useState("");
+  const [passcodeDraft, setPasscodeDraft] = useState("");
+  const [isOwner, setIsOwner] = useState(false);
+  const [access, setAccess] = useState<{ codes: AccessCode[]; members: AccessMember[] }>({ codes: [], members: [] });
+  const [issuedCode, setIssuedCode] = useState("");
+  const [codeLabel, setCodeLabel] = useState("guest");
+  const [codeDays, setCodeDays] = useState(30);
+  const [accessError, setAccessError] = useState("");
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
@@ -574,6 +582,68 @@ export default function App() {
     }
   };
 
+  const loadAccess = useCallback(async () => {
+    if (!backend.listAccess) return;
+    try {
+      setAccess(await backend.listAccess());
+      setAccessError("");
+    } catch (listError) {
+      setAccessError(listError instanceof Error ? listError.message : String(listError));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authed || !backend.isOwner) { setIsOwner(false); return; }
+    let cancelled = false;
+    void backend.isOwner()
+      .then((owner) => { if (!cancelled) { setIsOwner(owner); if (owner) void loadAccess(); } })
+      .catch(() => { if (!cancelled) setIsOwner(false); });
+    return () => { cancelled = true; };
+  }, [authed, loadAccess]);
+
+  const issuePasscode = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!backend.issuePasscode) return;
+    setAccessError("");
+    try {
+      setIssuedCode(await backend.issuePasscode({
+        label: codeLabel.trim() || "guest",
+        expiresInDays: codeDays > 0 ? codeDays : null
+      }));
+      await loadAccess();
+    } catch (issueError) {
+      setAccessError(issueError instanceof Error ? issueError.message : String(issueError));
+    }
+  };
+
+  const revoke = async (input: { codeId?: string; memberId?: string }) => {
+    if (!backend.revokeAccess) return;
+    setAccessError("");
+    try {
+      await backend.revokeAccess(input);
+      await loadAccess();
+    } catch (revokeError) {
+      setAccessError(revokeError instanceof Error ? revokeError.message : String(revokeError));
+    }
+  };
+
+  const redeemPasscode = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!backend.redeemPasscode) return;
+    setLoading(true);
+    setError("");
+    try {
+      await backend.redeemPasscode(passcodeDraft);
+      setPasscodeDraft("");
+      setStatus(null);
+      setAuthed(true);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "That passcode is not valid.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const signOut = async () => {
     await backend.signOut();
     setAuthed(false);
@@ -793,6 +863,23 @@ export default function App() {
                 />
                 <button className="primary" type="submit" disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button>
               </form>
+              {backend.redeemPasscode && (
+                <>
+                  <p className="passcode-divider">Or enter a passcode the owner gave you.</p>
+                  <form onSubmit={redeemPasscode}>
+                    <input
+                      autoComplete="one-time-code"
+                      spellCheck={false}
+                      value={passcodeDraft}
+                      onChange={(event) => setPasscodeDraft(event.target.value.toUpperCase())}
+                      placeholder="XXXX-XXXX-XXXX"
+                      aria-label="Passcode"
+                      required
+                    />
+                    <button className="ghost" type="submit" disabled={loading}>{loading ? "Checking…" : "Use passcode"}</button>
+                  </form>
+                </>
+              )}
             </>
           ) : (
             <>
@@ -898,8 +985,60 @@ export default function App() {
             </div>
           </section>
 
+          {isOwner && (
+            <>
+              <div className="section-title">
+                <div><span className="eyebrow">Access</span><h2>Passcodes</h2></div>
+              </div>
+              <section className="panel diagnostics">
+                {accessError && <div className="message error"><span>{accessError}</span></div>}
+                <p className="chart-legend-note" style={{ marginLeft: 0 }}>
+                  Each passcode works once, on one device. Whoever redeems it first keeps it, and the
+                  same code offered anywhere else is refused. Guests can watch the signals and enrol
+                  their own device; only this account can change settings or issue codes.
+                </p>
+                <form onSubmit={issuePasscode} className="access-row">
+                  <input className="grow" value={codeLabel} onChange={(e) => setCodeLabel(e.target.value)} placeholder="Who is it for?" aria-label="Passcode label" />
+                  <input type="number" min={0} max={365} value={codeDays} onChange={(e) => setCodeDays(Number(e.target.value))} aria-label="Expires in days" style={{ width: 84 }} />
+                  <button className="primary" type="submit">Generate</button>
+                </form>
+                {issuedCode && (
+                  <>
+                    <code className="issued-code">{issuedCode}</code>
+                    <p className="chart-legend-note" style={{ marginLeft: 0 }}>
+                      Copy it now. Only its hash is stored, so it cannot be shown again.
+                    </p>
+                  </>
+                )}
+                {access.codes.map((code) => {
+                  const spent = code.uses >= code.max_uses;
+                  const expired = Boolean(code.expires_at && Date.parse(code.expires_at) < clock);
+                  const dead = Boolean(code.revoked_at) || spent || expired;
+                  return (
+                    <div className="access-row" key={code.id}>
+                      <span className="grow">{code.label}</span>
+                      <span className="muted">{code.claimed_at ? `claimed ${formatTime(code.claimed_at, false)}` : "unclaimed"}</span>
+                      <span className="muted">
+                        {code.revoked_at ? "cancelled" : expired ? "expired" : spent ? "used up" : code.expires_at ? `until ${formatTime(code.expires_at, false)}` : "no expiry"}
+                      </span>
+                      {!dead && <button className="ghost" onClick={() => void revoke({ codeId: code.id })}>Revoke</button>}
+                    </div>
+                  );
+                })}
+                {access.members.filter((member) => !member.is_owner).map((member) => (
+                  <div className="access-row" key={member.user_id}>
+                    <span className="grow">{member.label}</span>
+                    <span className="muted">joined {formatTime(member.granted_at, false)}</span>
+                    <span className="muted">{member.revoked_at ? "revoked" : "active"}</span>
+                    {!member.revoked_at && <button className="ghost" onClick={() => void revoke({ memberId: member.user_id })}>Remove</button>}
+                  </div>
+                ))}
+              </section>
+            </>
+          )}
+
           {cloud && (
-            <section className="diagnostics panel">
+          <section className="diagnostics panel">
               <div>
                 <span className="eyebrow">Cloud health</span>
                 <h2>Heartbeats</h2>

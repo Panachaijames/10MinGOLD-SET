@@ -9,6 +9,25 @@ export interface SignInInput {
   password?: string;
 }
 
+export interface AccessCode {
+  id: string;
+  label: string;
+  created_at: string;
+  expires_at: string | null;
+  max_uses: number;
+  uses: number;
+  claimed_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface AccessMember {
+  user_id: string;
+  label: string;
+  is_owner: boolean;
+  granted_at: string;
+  revoked_at: string | null;
+}
+
 export interface TestPushResult {
   subscriptions: number;
   accepted: number;
@@ -40,6 +59,13 @@ export interface Backend {
   setTickers(): Promise<SetTickerState[]>;
   /** SET tickers: MACD history points for one ticker; empty on the legacy backend. */
   setHistory(symbol: string, limit?: number): Promise<SetMacdPoint[]>;
+  /** Sign in as a guest holding one of the owner's passcodes. */
+  redeemPasscode?(code: string): Promise<void>;
+  /** True when the signed-in account owns the deployment and may issue passcodes. */
+  isOwner?(): Promise<boolean>;
+  issuePasscode?(input: { label: string; expiresInDays: number | null }): Promise<string>;
+  listAccess?(): Promise<{ codes: AccessCode[]; members: AccessMember[] }>;
+  revokeAccess?(input: { codeId?: string; memberId?: string }): Promise<void>;
   /** Optional live updates; returns an unsubscribe function. */
   onChange?(callback: (table: string) => void): () => void;
 }
@@ -164,6 +190,23 @@ function percentile(values: number[], fraction: number): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return Math.round(sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * fraction))]);
+}
+
+/**
+ * functions.invoke reports a non-2xx as a generic "returned a non-2xx status code" and hides the
+ * body on error.context, so the reason a passcode was refused would never reach the guest.
+ */
+async function functionError(error: unknown, fallback: string): Promise<string> {
+  const response = (error as { context?: Response } | null)?.context;
+  if (response && typeof response.json === "function") {
+    try {
+      const body = await response.clone().json();
+      if (body?.error) return String(body.error);
+    } catch {
+      // Not JSON; fall back to the generic message below.
+    }
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 class SupabaseBackend implements Backend {
@@ -356,6 +399,70 @@ class SupabaseBackend implements Backend {
     if (error) throw new Error(error.message || "push-fanout failed");
     const result = (data || {}) as Partial<TestPushResult>;
     return { subscriptions: result.subscriptions ?? 0, accepted: result.accepted ?? 0, failed: result.failed ?? 0 };
+  }
+
+  /**
+   * A guest signs in anonymously, which grants a user id and nothing at all, then redeems the
+   * passcode to be recorded as a member. Every table's policy checks membership, so a failed
+   * redemption leaves a session that can read nothing; it is signed out rather than left behind.
+   */
+  async redeemPasscode(code: string): Promise<void> {
+    const { data: existing } = await this.client.auth.getSession();
+    const hadSession = Boolean(existing.session);
+    if (!hadSession) {
+      const { error } = await this.client.auth.signInAnonymously();
+      if (error) {
+        throw new Error(
+          error.message.toLowerCase().includes("disabled")
+            ? "Guest sign-in is switched off for this project. Enable anonymous sign-ins in Supabase Auth settings."
+            : error.message
+        );
+      }
+    }
+    const { data, error } = await this.client.functions.invoke("access-code", { body: { action: "redeem", code } });
+    const failure = error
+      ? await functionError(error, "That passcode is not valid.")
+      : (data as { error?: string } | null)?.error;
+    if (failure) {
+      // A session that redeemed nothing can read nothing, so do not leave it behind.
+      if (!hadSession) await this.client.auth.signOut();
+      throw new Error(failure);
+    }
+  }
+
+  async isOwner(): Promise<boolean> {
+    const { data, error } = await this.client.rpc("is_owner");
+    return !error && data === true;
+  }
+
+  async issuePasscode(input: { label: string; expiresInDays: number | null }): Promise<string> {
+    const { data, error } = await this.client.functions.invoke("access-code", {
+      body: { action: "issue", label: input.label, expires_in_days: input.expiresInDays }
+    });
+    if (error) throw new Error(await functionError(error, "Could not issue a passcode."));
+    const payload = (data || {}) as { code?: string; error?: string };
+    if (payload.error || !payload.code) throw new Error(payload.error || "No passcode was returned.");
+    return payload.code;
+  }
+
+  async listAccess(): Promise<{ codes: AccessCode[]; members: AccessMember[] }> {
+    const [codes, members] = await Promise.all([
+      this.client.from("access_codes").select("*").order("created_at", { ascending: false }).limit(50),
+      this.client.from("app_members").select("*").order("granted_at", { ascending: false }).limit(50)
+    ]);
+    return {
+      codes: (codes.data as AccessCode[]) || [],
+      members: (members.data as AccessMember[]) || []
+    };
+  }
+
+  async revokeAccess(input: { codeId?: string; memberId?: string }): Promise<void> {
+    const { data, error } = await this.client.functions.invoke("access-code", {
+      body: { action: "revoke", code_id: input.codeId, member_id: input.memberId }
+    });
+    if (error) throw new Error(await functionError(error, "Could not revoke that."));
+    const payload = (data || {}) as { error?: string };
+    if (payload.error) throw new Error(payload.error);
   }
 
   async testLine(): Promise<{ ok: boolean; message?: string }> {
