@@ -1,5 +1,15 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
-import { AlertRecord, CandleSeries, PublicConfig, SetMacdPoint, SetTickerState, StatusResponse, api } from "./api";
+import {
+  AlertRecord,
+  CandleSeries,
+  PublicConfig,
+  SetMacdPoint,
+  SetTickerState,
+  StatusResponse,
+  SymbolHit,
+  WatchlistEntry,
+  api
+} from "./api";
 
 export type BackendKind = "legacy" | "supabase";
 
@@ -59,6 +69,12 @@ export interface Backend {
   setTickers(): Promise<SetTickerState[]>;
   /** SET tickers: MACD history points for one ticker; empty on the legacy backend. */
   setHistory(symbol: string, limit?: number): Promise<SetMacdPoint[]>;
+  /** The signed-in member's own watched instruments; empty on the legacy backend. */
+  watchlist(): Promise<WatchlistEntry[]>;
+  /** Search TradingView for an instrument to add. Cloud only. */
+  searchSymbols?(text: string): Promise<SymbolHit[]>;
+  addWatch?(input: { symbol: string; timeframe: number; label?: string | null }): Promise<void>;
+  removeWatch?(id: string): Promise<void>;
   /** Sign in as a guest holding one of the owner's passcodes. */
   redeemPasscode?(code: string): Promise<void>;
   /** True when the signed-in account owns the deployment and may issue passcodes. */
@@ -134,6 +150,12 @@ class LegacyBackend implements Backend {
   }
 
   async setHistory(): Promise<SetMacdPoint[]> {
+    return [];
+  }
+
+  // Watchlists are a cloud feature: the scanner, the per-member routing and the search proxy all
+  // live in Supabase. The local process watches the one MT5 symbol it was configured with.
+  async watchlist(): Promise<WatchlistEntry[]> {
     return [];
   }
 }
@@ -569,6 +591,90 @@ class SupabaseBackend implements Backend {
       signal: row.signal,
       histogram: row.histogram
     }));
+  }
+
+  /**
+   * The member's own instruments, with whatever the shared scanner last saw for each.
+   *
+   * RLS returns only this account's rows, so no user filter is needed here. `watch_state` is
+   * keyed by symbol and timeframe rather than by member — one scan serves everyone watching the
+   * same instrument — so the two are matched up in the client instead of joined in PostgREST.
+   */
+  async watchlist(): Promise<WatchlistEntry[]> {
+    const { data, error } = await this.client
+      .from("watchlist")
+      .select("id,symbol,timeframe,label,enabled,created_at")
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    type Row = { id: string; symbol: string; timeframe: number; label: string | null; enabled: boolean; created_at: string };
+    const rows = (data as Row[]) || [];
+    if (!rows.length) return [];
+
+    type StateRow = {
+      symbol: string;
+      timeframe: number;
+      last_bar_time: number | null;
+      last_close: number | null;
+      last_macd: number | null;
+      last_signal: number | null;
+      last_hist: number | null;
+      last_polled_at: string | null;
+      last_error: string | null;
+    };
+    const { data: states } = await this.client
+      .from("watch_state")
+      .select("symbol,timeframe,last_bar_time,last_close,last_macd,last_signal,last_hist,last_polled_at,last_error")
+      .in("symbol", [...new Set(rows.map((row) => row.symbol))]);
+    const byInstrument = new Map(
+      ((states as StateRow[]) || []).map((row) => [`${row.symbol}|${row.timeframe}`, row])
+    );
+
+    return rows.map((row) => {
+      const state = byInstrument.get(`${row.symbol}|${row.timeframe}`);
+      return {
+        id: row.id,
+        symbol: row.symbol,
+        timeframe_minutes: row.timeframe,
+        label: row.label,
+        enabled: row.enabled,
+        created_at: row.created_at,
+        last_bar_time: state?.last_bar_time ? new Date(Number(state.last_bar_time) * 1000).toISOString() : null,
+        close: state?.last_close ?? null,
+        macd: state?.last_macd ?? null,
+        signal: state?.last_signal ?? null,
+        histogram: state?.last_hist ?? null,
+        last_polled_at: state?.last_polled_at ?? null,
+        last_error: state?.last_error ?? null
+      };
+    });
+  }
+
+  async searchSymbols(text: string): Promise<SymbolHit[]> {
+    const { data, error } = await this.client.functions.invoke("symbol-search", { body: { text } });
+    if (error) throw new Error(await functionError(error, "Symbol search is unavailable."));
+    const payload = (data || {}) as { results?: SymbolHit[]; error?: string };
+    if (payload.error) throw new Error(payload.error);
+    return payload.results || [];
+  }
+
+  async addWatch(input: { symbol: string; timeframe: number; label?: string | null }): Promise<void> {
+    // user_id defaults to auth.uid(); the per-member and project-wide caps are database triggers,
+    // so a rejection here is the real limit rather than a UI guess.
+    const { error } = await this.client
+      .from("watchlist")
+      .insert({ symbol: input.symbol, timeframe: input.timeframe, label: input.label ?? null });
+    if (error) {
+      throw new Error(
+        error.code === "23505"
+          ? "That symbol and timeframe is already on your list."
+          : error.message
+      );
+    }
+  }
+
+  async removeWatch(id: string): Promise<void> {
+    const { error } = await this.client.from("watchlist").delete().eq("id", id);
+    if (error) throw new Error(error.message);
   }
 
   onChange(callback: (table: string) => void): () => void {

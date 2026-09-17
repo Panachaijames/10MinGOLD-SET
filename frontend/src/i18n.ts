@@ -125,6 +125,22 @@ const TH: Record<string, string> = {
   "Choose a gold timeframe, or open the Supabase deployment for SET and Bitcoin.":
     "เลือกไทม์เฟรมของทองคำ หรือเปิดผ่าน Supabase เพื่อดูหุ้นไทยและบิตคอยน์",
 
+  // watchlist
+  "Watchlist": "รายการเฝ้าดู",
+  "Your instruments · M5 to D1 · no setup needed": "หลักทรัพย์ของคุณ · M5 ถึง D1 · ไม่ต้องตั้งค่าเพิ่ม",
+  "Search any symbol: PTT, AAPL, BTCUSDT…": "ค้นหาหลักทรัพย์ใดก็ได้: PTT, AAPL, BTCUSDT…",
+  "Search instruments": "ค้นหาหลักทรัพย์",
+  "Timeframe for the instrument you add": "ไทม์เฟรมของหลักทรัพย์ที่เพิ่ม",
+  "Searching…": "กำลังค้นหา…",
+  "No instrument matched that search.": "ไม่พบหลักทรัพย์ที่ตรงกับคำค้นนี้",
+  "added. The next scan covers it.": "เพิ่มแล้ว ระบบจะเริ่มเฝ้าดูในรอบสแกนถัดไป",
+  "Nothing on your list yet. Search above to add an instrument.":
+    "ยังไม่มีรายการ ค้นหาด้านบนเพื่อเพิ่มหลักทรัพย์",
+  "Instrument": "หลักทรัพย์",
+  "Timeframe": "ไทม์เฟรม",
+  "delayed": "ดีเลย์",
+  "feed error": "ข้อมูลผิดพลาด",
+
   // SET table
   "SET stocks · 15m · TradingView (15-min delayed)": "หุ้นไทย · 15 นาที · TradingView (ดีเลย์ 15 นาที)",
   "MACD by ticker": "MACD แยกตามหลักทรัพย์",

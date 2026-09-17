@@ -82,14 +82,29 @@ class MT5Source:
                 self._mt5.shutdown()
             self._connected = False
 
+    # Every supported timeframe is a native MetaTrader 5 period, so candles come from the broker
+    # rather than being resampled. Looked up by name so a terminal build that does not expose one
+    # of them says which constant is missing instead of raising AttributeError mid-poll.
+    _MT5_PERIOD_NAMES = {
+        5: "TIMEFRAME_M5",
+        10: "TIMEFRAME_M10",
+        15: "TIMEFRAME_M15",
+        30: "TIMEFRAME_M30",
+        60: "TIMEFRAME_H1",
+        240: "TIMEFRAME_H4",
+        1440: "TIMEFRAME_D1",
+    }
+
     def _timeframe(self, minutes: int) -> int:
         if not self._mt5:
             raise MarketDataError("MT5 is not connected")
-        mapping = {10: self._mt5.TIMEFRAME_M10, 15: self._mt5.TIMEFRAME_M15}
-        try:
-            return mapping[minutes]
-        except KeyError as exc:
-            raise MarketDataError(f"Unsupported MT5 timeframe: {minutes}") from exc
+        name = self._MT5_PERIOD_NAMES.get(minutes)
+        if name is None:
+            raise MarketDataError(f"Unsupported MT5 timeframe: {minutes}")
+        period = getattr(self._mt5, name, None)
+        if period is None:
+            raise MarketDataError(f"This MetaTrader 5 build does not expose {name} (M{minutes})")
+        return period
 
     # ------------------------------------------------------------- server clock
 

@@ -129,6 +129,61 @@ export interface PublicConfig {
   line_bot_add_url?: string | null;
 }
 
+/**
+ * The timeframes a watchlist instrument can use.
+ *
+ * Every one except M10 is a native TradingView resolution for an anonymous session; M10 is a
+ * paid "custom resolution" there and is rebuilt from pairs of M5 bars by the scanner, which is
+ * what the laptop's gold watcher has always done. Keep this in step with the `watchlist`
+ * table's timeframe constraint and `_shared/instruments.ts`.
+ */
+export const WATCH_TIMEFRAMES = [
+  { minutes: 5, label: "M5" },
+  { minutes: 10, label: "M10" },
+  { minutes: 15, label: "M15" },
+  { minutes: 30, label: "M30" },
+  { minutes: 60, label: "H1" },
+  { minutes: 240, label: "H4" },
+  { minutes: 1440, label: "D1" }
+] as const;
+
+export function timeframeLabel(minutes: number): string {
+  return WATCH_TIMEFRAMES.find((frame) => frame.minutes === minutes)?.label ?? `M${minutes}`;
+}
+
+/** EXCHANGE:SYMBOL is how TradingView names an instrument; the exchange half is noise on screen. */
+export function shortSymbol(symbol: string): string {
+  return symbol.replace(/^[A-Z0-9_]+:/, "");
+}
+
+/** A search hit from TradingView, normalised by the symbol-search function. */
+export interface SymbolHit {
+  ticker: string;
+  symbol: string;
+  exchange: string;
+  description: string;
+  type: string;
+  currency: string | null;
+  country: string | null;
+}
+
+export interface WatchlistEntry {
+  id: string;
+  symbol: string;
+  timeframe_minutes: number;
+  label: string | null;
+  enabled: boolean;
+  created_at: string;
+  /** Scanner state, absent until the first scan covers the instrument. */
+  last_bar_time: string | null;
+  close: number | null;
+  macd: number | null;
+  signal: number | null;
+  histogram: number | null;
+  last_polled_at: string | null;
+  last_error: string | null;
+}
+
 async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (token) headers.set("X-App-Token", token);

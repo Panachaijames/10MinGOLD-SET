@@ -123,6 +123,17 @@ cd frontend
 npm run build
 ```
 
+## Timeframes
+
+The laptop watcher accepts any of M5, M10, M15, M30, H1, H4 and D1 in `TIMEFRAMES` (minutes:
+`5,10,15,30,60,240,1440`). Each is a native MetaTrader 5 period, so candles come straight from the
+broker with no resampling. Every extra timeframe is another poll each cycle and another card in
+the dashboard, so list only the ones you trade; `10,15` remains the default.
+
+The same set is supported in the cloud — `supabase/functions/_shared/instruments.ts` is the one
+place it is defined there — and the database constrains `alerts`, `candles` and `watch_state` to
+it, so the three cannot drift apart.
+
 ## Signal definition
 
 MACD uses standard exponential moving averages with `adjust=False` (the same recursion as TradingView's Pine `ta.ema`), computed over at least `MIN_HISTORY_BARS` (260) closed candles so the seed has washed out:
@@ -174,11 +185,39 @@ DAOL SEC does not currently expose SET equity market data through Settrade Open 
 
 References: [Tailscale Personal pricing](https://tailscale.com/pricing), [Exness VPS](https://www.exness.com/vps/), [AWS Lightsail Windows bundles](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-bundles.html), [MQL5 VPS pricing](https://www.mql5.com/en/vps), [TradingView plans](https://www.tradingview.com/pricing/), and [TradingView SET data fees](https://www.tradingview.com/data-coverage/).
 
+## Watchlist: any symbol, any timeframe, no setup
+
+Anyone who can sign in can search for an instrument and add it to their own watchlist on M5, M10,
+M15, M30, H1, H4 or D1. The cloud scanner then watches it for MACD crossovers. Nothing is
+configured per symbol anywhere: no TradingView alert, no webhook, no Pine script, no change to
+this repository.
+
+- **The list is per person.** Alerts for an instrument go only to the devices of the people
+  watching it, so a guest adding twenty symbols does not notify anybody else. The scan itself is
+  shared: ten people watching PTT M15 cost one read, not ten.
+- **Charts come with it.** An added instrument appears in the chart pane dropdown with the same
+  MACD, RSI and alert arrows as gold.
+- **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 20;
+  `watchlist_max_instruments`, default 80 distinct instruments across everyone), so they hold even
+  against a hand-written request.
+
+The honest limitation is data, not code: **SET stocks on the anonymous feed are 15 minutes
+delayed**, so a self-service SET alert arrives about 15 minutes after the candle closes. Crypto,
+FX and US equities come through in real time. The owner's hand-made TradingView webhook alerts stay
+real time for the nine configured SET symbols, and because both producers build the same alert id,
+a bar covered by both is delivered once.
+
+Timeframes were measured against the live service rather than assumed: 1, 3, 5, 15, 30, 45, 60,
+120, 240 and 1D all resolve for an anonymous session, while 10 is refused as a paid "custom
+resolution". M10 is therefore built from complete pairs of M5 bars, which is what the gold failover
+has always done.
+
 ## Chart
 
 The PWA has selectable one-, two-, and four-pane candlestick layouts with full-screen mode. Every
-chart includes MACD, signal, histogram, RSI(14), and matching alert arrows. Gold is available on M10
-and M15, each configured SET stock on M15, and Binance BTCUSDT on M10 and M15. The local API serves
+chart includes MACD, signal, histogram, RSI(14), and matching alert arrows. Gold is available on
+whichever timeframes `TIMEFRAMES` lists, each configured SET stock on M15, Binance BTCUSDT on M10
+and M15, and every watchlist instrument on its own timeframe. The local API serves
 gold; in cloud mode all series come from the generic `candles` table and update through Supabase
 Realtime. `market-candles` stores closed TradingView OHLC for SET and Bitcoin. SET chart data is the
 anonymous exchange feed and is therefore 15 minutes delayed; Bitcoin is refreshed after each close.
@@ -214,7 +253,7 @@ deduplication and synchronization contract.
 
    ```powershell
    npx supabase@2.116.0 secrets set VAPID_KEYS_JWK='{"publicKey":{...},"privateKey":{...}}' VAPID_SUBJECT=mailto:you@example.com PUBLIC_APP_URL=https://<your-app>/
-   npx supabase@2.116.0 functions deploy push-fanout set-scan market-candles push-receipt gold-scan tv-webhook
+   npx supabase@2.116.0 functions deploy push-fanout set-scan market-candles push-receipt gold-scan tv-webhook watch-scan symbol-search
    ```
 
    `verify_jwt = false` for these functions is already in `supabase/config.toml`; the functions check
@@ -298,7 +337,27 @@ deduplication and synchronization contract.
    failures through `heartbeats`; a socket failure never fabricates a candle or reuses a partial M10
    bucket.
 
-8. **Keep the Free project awake.** Cron-only traffic may not count as activity; the laptop's weekday
+8. **Watchlists (self-service symbols).** Nothing to configure: `db push` creates the tables and
+   the two cron jobs, and deploying `watch-scan` and `symbol-search` completes it. Members add
+   instruments in the PWA's Watchlist panel.
+
+   ```powershell
+   npx supabase@2.116.0 functions deploy watch-scan symbol-search
+   ```
+
+   Controls live in `public.settings`: `watchlist_enabled` (kill switch), `watchlist_dry_run`
+   (detect and chart without notifying), `watchlist_max_per_user` (20), `watchlist_max_instruments`
+   (80 distinct instruments across everyone), `watchlist_settle_ms` and `watchlist_batch_size`.
+   Raise the caps only with the free tier in mind: each distinct instrument is one chart-socket
+   read per candle, so eighty M5 instruments is eighty reads every five minutes.
+
+   Checks: `heartbeats.watchlist` carries the last run's instrument count, alert count and a
+   per-instrument summary; `public.watch_state.last_error` names an instrument the feed refused.
+   The watchdog raises a system alert if no scan completes for 45 minutes while somebody is
+   watching an intraday instrument. Force a run with
+   `select ops.watch_scan_gate(false);` or by calling the function with `?force=1`.
+
+9. **Keep the Free project awake.** Cron-only traffic may not count as activity; the laptop's weekday
    inserts help, and a twice-weekly external REST ping (GitHub Actions) is the belt-and-braces option.
 
 Useful checks: `select * from cron.job_run_details order by start_time desc limit 20;`,

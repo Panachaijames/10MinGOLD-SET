@@ -16,11 +16,21 @@ load_dotenv(PROJECT_ROOT / ".env")
 DEFAULT_MIN_HISTORY_BARS = 260
 
 
+# M5, M10, M15, M30, H1, H4 and D1: every one is a native MetaTrader 5 period, so the watcher
+# reads broker candles directly and never resamples. The cloud scanner supports the same set
+# (supabase/functions/_shared/instruments.ts), and the database constrains alerts and candles
+# to it, so the three stay in step.
+SUPPORTED_TIMEFRAMES = (5, 10, 15, 30, 60, 240, 1440)
+
+
 def _csv_ints(value: str) -> tuple[int, ...]:
     values = tuple(dict.fromkeys(int(item.strip()) for item in value.split(",") if item.strip()))
-    unsupported = set(values) - {10, 15}
+    unsupported = set(values) - set(SUPPORTED_TIMEFRAMES)
     if unsupported:
-        raise ValueError(f"Only native MT5 M10/M15 are supported, received: {sorted(unsupported)}")
+        supported = ", ".join(str(minutes) for minutes in SUPPORTED_TIMEFRAMES)
+        raise ValueError(
+            f"TIMEFRAMES accepts {supported} (minutes), received: {sorted(unsupported)}"
+        )
     if not values:
         raise ValueError("TIMEFRAMES cannot be empty")
     return values

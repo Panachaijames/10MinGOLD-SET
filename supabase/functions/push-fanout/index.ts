@@ -136,13 +136,40 @@ async function sendOne(
   }
 }
 
+/**
+ * Which accounts asked for this alert, or null when it belongs to everybody.
+ *
+ * Gold and SET are the deployment's own instruments and always went to every enrolled device.
+ * A watchlist alert is different: one member added that symbol, and it is their notification,
+ * not a broadcast. Everyone watching the same symbol and timeframe shares the single scan and
+ * each gets their own delivery row.
+ */
+async function audienceFor(client: ReturnType<typeof adminClient>, alert: AlertRow | null): Promise<string[] | null> {
+  if (!alert || alert.source !== "watchlist") return null;
+  const { data, error } = await client
+    .from("watchlist")
+    .select("user_id")
+    .eq("symbol", alert.symbol)
+    .eq("timeframe", alert.timeframe)
+    .eq("enabled", true);
+  if (error) throw error;
+  return [...new Set(((data ?? []) as { user_id: string }[]).map((row) => row.user_id))];
+}
+
 async function fanOut(alert: AlertRow | null, kind: "alert" | "test") {
   const client = adminClient();
   const ttl = await getSetting<number>(client, "push_ttl_seconds", 600);
-  const { data: subscriptions, error } = await client
+  const audience = await audienceFor(client, alert);
+  // The last member watching an instrument can remove it between the scan and the fan-out.
+  if (audience !== null && audience.length === 0) {
+    return { subscriptions: 0, accepted: 0, failed: 0, skipped: 0 };
+  }
+  let query = client
     .from("push_subscriptions")
     .select("endpoint,p256dh,auth,platform")
     .eq("enabled", true);
+  if (audience !== null) query = query.in("user_id", audience);
+  const { data: subscriptions, error } = await query;
   if (error) throw error;
   const result = { subscriptions: subscriptions?.length ?? 0, accepted: 0, failed: 0, skipped: 0 };
   const topic = alert ? topicFor(alert) : undefined;
@@ -247,6 +274,32 @@ async function sweep() {
   return result;
 }
 
+/**
+ * LINE is one channel belonging to the owner, so a guest's watchlist must not appear in it.
+ * Gold, SET and system alerts are the deployment's own and always go; a watchlist alert goes
+ * only when the owner is one of the people watching that instrument.
+ */
+async function lineWantsAlert(alert: AlertRow | null): Promise<boolean> {
+  if (!alert || alert.source !== "watchlist") return true;
+  const client = adminClient();
+  const { data: owners } = await client
+    .from("app_members")
+    .select("user_id")
+    .eq("is_owner", true)
+    .is("revoked_at", null);
+  const ownerIds = ((owners ?? []) as { user_id: string }[]).map((row) => row.user_id);
+  if (!ownerIds.length) return false;
+  const { data: watched } = await client
+    .from("watchlist")
+    .select("user_id")
+    .eq("symbol", alert.symbol)
+    .eq("timeframe", alert.timeframe)
+    .eq("enabled", true)
+    .in("user_id", ownerIds)
+    .limit(1);
+  return ((watched ?? []) as unknown[]).length > 0;
+}
+
 /** What happened on the LINE leg, so a silent misconfiguration cannot look like success. */
 export interface LineResult {
   configured: boolean;
@@ -334,7 +387,9 @@ Deno.serve(async (req) => {
     const record = body.record as AlertRow;
     const work = Promise.all([
       fanOut(record, "alert").catch((error) => console.error("fan-out failed", error)),
-      sendLineAlert(record).catch((error) => console.error("LINE fan-out failed", error)),
+      lineWantsAlert(record)
+        .then((wanted) => (wanted ? sendLineAlert(record) : null))
+        .catch((error) => console.error("LINE fan-out failed", error)),
     ]);
     if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(work);
     else await work;

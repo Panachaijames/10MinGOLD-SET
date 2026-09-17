@@ -1,6 +1,18 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { AlertRecord, CandleSeries, PublicConfig, SetTickerState, StatusResponse, TimeframeState } from "./api";
+import {
+  AlertRecord,
+  CandleSeries,
+  PublicConfig,
+  SetTickerState,
+  StatusResponse,
+  SymbolHit,
+  TimeframeState,
+  WATCH_TIMEFRAMES,
+  WatchlistEntry,
+  shortSymbol,
+  timeframeLabel
+} from "./api";
 import { createBackend } from "./backend";
 import { CandleChart, DEFAULT_INDICATORS, INDICATORS, orderIndicators, type IndicatorKey } from "./charts";
 import type { AccessCode, AccessMember } from "./backend";
@@ -8,8 +20,10 @@ import { t, useLang } from "./i18n";
 
 const backend = createBackend();
 const BITCOIN_SYMBOL = "BINANCE:BTCUSDT";
+const SUPPORTED_TIMEFRAMES = new Set<number>(WATCH_TIMEFRAMES.map((frame) => frame.minutes));
+const GOLD_TIMEFRAMES = [10, 15];
 
-type ChartInstrumentKind = "gold" | "set" | "bitcoin";
+type ChartInstrumentKind = "gold" | "set" | "bitcoin" | "watch";
 
 interface ChartInstrument {
   kind: ChartInstrumentKind;
@@ -21,28 +35,49 @@ function candleSeriesKey(symbol: string, timeframe: number): string {
   return `${symbol}|${timeframe}`;
 }
 
+/** SET's anonymous feed is 15 minutes behind; everything else the scanner reads is current. */
+function isDelayedSymbol(symbol: string): boolean {
+  return symbol.startsWith("SET:");
+}
+
 function chartInstrument(paneKey: string, goldSymbol: string): ChartInstrument | null {
   if (paneKey.startsWith("gold:")) {
     const timeframe = Number(paneKey.slice(5));
-    return timeframe === 10 || timeframe === 15 ? { kind: "gold", symbol: goldSymbol, timeframe } : null;
+    return SUPPORTED_TIMEFRAMES.has(timeframe) ? { kind: "gold", symbol: goldSymbol, timeframe } : null;
   }
   if (paneKey.startsWith("btc:")) {
     const timeframe = Number(paneKey.slice(4));
-    return timeframe === 10 || timeframe === 15 ? { kind: "bitcoin", symbol: BITCOIN_SYMBOL, timeframe } : null;
+    return SUPPORTED_TIMEFRAMES.has(timeframe) ? { kind: "bitcoin", symbol: BITCOIN_SYMBOL, timeframe } : null;
   }
   if (paneKey.startsWith("set:")) {
     const symbol = paneKey.slice(4);
     return symbol ? { kind: "set", symbol, timeframe: 15 } : null;
   }
+  // watch:EXCHANGE:SYMBOL:TIMEFRAME — the ticker contains a colon of its own, so the timeframe
+  // is split off the end rather than the symbol off the front.
+  if (paneKey.startsWith("watch:")) {
+    const rest = paneKey.slice(6);
+    const cut = rest.lastIndexOf(":");
+    if (cut <= 0) return null;
+    const symbol = rest.slice(0, cut);
+    const timeframe = Number(rest.slice(cut + 1));
+    return SUPPORTED_TIMEFRAMES.has(timeframe) ? { kind: "watch", symbol, timeframe } : null;
+  }
   return null;
+}
+
+function watchPaneKey(symbol: string, timeframe: number): string {
+  return `watch:${symbol}:${timeframe}`;
 }
 
 function chartInstrumentLabel(paneKey: string, goldSymbol: string): string {
   const instrument = chartInstrument(paneKey, goldSymbol);
   if (!instrument) return paneKey;
-  if (instrument.kind === "gold") return `${goldSymbol} · M${instrument.timeframe}`;
-  if (instrument.kind === "bitcoin") return `BTCUSDT · M${instrument.timeframe}`;
-  return `${instrument.symbol.replace(/^SET:/, "")} · M15 · delayed`;
+  if (instrument.kind === "gold") return `${goldSymbol} · ${timeframeLabel(instrument.timeframe)}`;
+  if (instrument.kind === "bitcoin") return `BTCUSDT · ${timeframeLabel(instrument.timeframe)}`;
+  if (instrument.kind === "set") return `${shortSymbol(instrument.symbol)} · M15 · delayed`;
+  const suffix = isDelayedSymbol(instrument.symbol) ? " · delayed" : "";
+  return `${shortSymbol(instrument.symbol)} · ${timeframeLabel(instrument.timeframe)}${suffix}`;
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -286,9 +321,181 @@ function alertHeadline(alert: AlertRecord): string {
   const prefix = alert.source === "gold_cloud"
     ? "Cloud feed · "
     : alert.source && alert.source !== "gold_mt5"
-      ? `${alert.symbol.replace(/^SET:/, "")} · `
+      ? `${shortSymbol(alert.symbol)} · `
       : "";
   return `${prefix}${alert.direction === "bearish" ? "▼ Bearish" : "▲ Bullish"} MACD crossover`;
+}
+
+interface WatchlistPanelProps {
+  entries: WatchlistEntry[];
+  error: string;
+  onChanged: () => void;
+  onSelect: (symbol: string, timeframe: number) => void;
+}
+
+/**
+ * Add any instrument, on any supported timeframe, without anybody configuring anything.
+ *
+ * The list is per member: the cloud scanner reads each distinct instrument once however many
+ * people watch it, and the fan-out sends the resulting alert only to the people who asked for
+ * it. Removing a row stops the notifications for this account and nobody else's.
+ */
+function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelProps) {
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SymbolHit[]>([]);
+  const [timeframe, setTimeframe] = useState(15);
+  const [searching, setSearching] = useState(false);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState("");
+  const searchToken = useRef(0);
+
+  // Search on a pause in typing rather than on every keystroke: each call is a request the
+  // function forwards to TradingView on the project's behalf.
+  useEffect(() => {
+    const text = query.trim();
+    if (text.length < 2 || !backend.searchSymbols) {
+      setHits([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const token = ++searchToken.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const results = await backend.searchSymbols!(text);
+        if (searchToken.current === token) {
+          setHits(results);
+          setMessage(results.length ? "" : t("No instrument matched that search."));
+        }
+      } catch (searchError) {
+        if (searchToken.current === token) {
+          setHits([]);
+          setMessage(searchError instanceof Error ? searchError.message : String(searchError));
+        }
+      } finally {
+        if (searchToken.current === token) setSearching(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const add = async (hit: SymbolHit) => {
+    if (!backend.addWatch) return;
+    setBusy(hit.ticker);
+    setMessage("");
+    try {
+      await backend.addWatch({ symbol: hit.ticker, timeframe, label: hit.description || hit.symbol });
+      setQuery("");
+      setHits([]);
+      setMessage(`${hit.ticker} ${timeframeLabel(timeframe)} ${t("added. The next scan covers it.")}`);
+      onChanged();
+    } catch (addError) {
+      setMessage(addError instanceof Error ? addError.message : String(addError));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const remove = async (entry: WatchlistEntry) => {
+    if (!backend.removeWatch) return;
+    setBusy(entry.id);
+    try {
+      await backend.removeWatch(entry.id);
+      setMessage("");
+      onChanged();
+    } catch (removeError) {
+      setMessage(removeError instanceof Error ? removeError.message : String(removeError));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="panel watchlist-panel">
+      {error && <div className="message error"><span>{error}</span></div>}
+      <div className="watch-search">
+        <input
+          type="search"
+          value={query}
+          placeholder={t("Search any symbol: PTT, AAPL, BTCUSDT…")}
+          aria-label={t("Search instruments")}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <select
+          value={timeframe}
+          aria-label={t("Timeframe for the instrument you add")}
+          onChange={(event) => setTimeframe(Number(event.target.value))}
+        >
+          {WATCH_TIMEFRAMES.map((frame) => (
+            <option key={frame.minutes} value={frame.minutes}>{frame.label}</option>
+          ))}
+        </select>
+      </div>
+      {searching && <p className="watch-hint">{t("Searching…")}</p>}
+      {message && <p className="watch-hint">{message}</p>}
+      {hits.length > 0 && (
+        <ul className="watch-results">
+          {hits.map((hit) => (
+            <li key={hit.ticker}>
+              <button type="button" onClick={() => add(hit)} disabled={busy === hit.ticker}>
+                <span className="watch-result-symbol">{hit.symbol}</span>
+                <span className="watch-result-detail">{hit.description || hit.type}</span>
+                <span className="watch-result-exchange">{hit.exchange}</span>
+                <span className="watch-result-add">{busy === hit.ticker ? "…" : `+ ${timeframeLabel(timeframe)}`}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <table className="set-table">
+        <thead>
+          <tr>
+            <th>{t("Instrument")}</th><th>{t("Timeframe")}</th><th>MACD</th><th>{t("Hist")}</th>
+            <th>{t("Last closed bar")}</th><th />
+          </tr>
+        </thead>
+        <tbody>
+          {entries.length === 0 ? (
+            <tr>
+              <td className="empty-cell" colSpan={6}>
+                {t("Nothing on your list yet. Search above to add an instrument.")}
+              </td>
+            </tr>
+          ) : entries.map((entry) => (
+            <tr
+              key={entry.id}
+              className="selectable"
+              onClick={() => onSelect(entry.symbol, entry.timeframe_minutes)}
+            >
+              <td>
+                {shortSymbol(entry.symbol)}
+                {isDelayedSymbol(entry.symbol) && <span className="tag-delayed">{t("delayed")}</span>}
+              </td>
+              <td>{timeframeLabel(entry.timeframe_minutes)}</td>
+              <td>{entry.macd?.toFixed(4) ?? "—"}</td>
+              <td className={(entry.histogram ?? 0) >= 0 ? "mint" : "coral"}>{entry.histogram?.toFixed(4) ?? "—"}</td>
+              <td>
+                {entry.last_error
+                  ? <span className="coral">{t("feed error")}</span>
+                  : formatTime(entry.last_bar_time, false)}
+              </td>
+              <td>
+                <button
+                  className="ghost small"
+                  disabled={busy === entry.id}
+                  onClick={(event) => { event.stopPropagation(); void remove(entry); }}
+                  aria-label={`${t("Remove")} ${entry.symbol} ${timeframeLabel(entry.timeframe_minutes)}`}
+                >
+                  {busy === entry.id ? "…" : t("Remove")}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
 }
 
 export default function App() {
@@ -342,6 +549,8 @@ export default function App() {
   const [setTickers, setSetTickers] = useState<SetTickerState[]>([]);
   const [setPanelError, setSetPanelError] = useState("");
   const [selectedSet, setSelectedSet] = useState<string>("");
+  const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
+  const [watchError, setWatchError] = useState("");
   const highlightedAlert = useMemo(() => new URLSearchParams(window.location.search).get("alert"), []);
   const refreshing = useRef(false);
   const chartPanel = useRef<HTMLElement | null>(null);
@@ -364,6 +573,24 @@ export default function App() {
       .filter((value): value is ChartInstrument => value !== null),
     [visiblePanes, goldSymbol]
   );
+  const loadWatchlist = useCallback(async () => {
+    if (!authed || backend.kind !== "supabase") return;
+    try {
+      setWatchlist(await backend.watchlist());
+      setWatchError("");
+    } catch (listError) {
+      setWatchError(listError instanceof Error ? listError.message : String(listError));
+    }
+  }, [authed]);
+
+  // `refresh` must not take a dependency on the watchlist loader: it would then change identity
+  // on every list edit and restart the polling effect below.
+  const loadWatchlistRef = useRef(loadWatchlist);
+  useEffect(() => {
+    loadWatchlistRef.current = loadWatchlist;
+    void loadWatchlist();
+  }, [loadWatchlist]);
+
   const requestedInstruments = useMemo(() => {
     const requested = [
       ...visibleInstruments,
@@ -424,6 +651,9 @@ export default function App() {
         } catch (setError) {
           setSetPanelError(setError instanceof Error ? setError.message : String(setError));
         }
+        // The watchlist's MACD column comes from the shared scanner, so it moves on the same
+        // Realtime events as the charts rather than only when the member edits the list.
+        await loadWatchlistRef.current();
       }
     } catch (requestError) {
       if (!quiet) setError(requestError instanceof Error ? requestError.message : "Unable to connect");
@@ -763,14 +993,33 @@ export default function App() {
 
   const paneOptions = useMemo(() => {
     const setSymbols = [...new Set(setTickers.map((row) => row.symbol))];
+    // Gold's timeframes come from the watcher itself (TIMEFRAMES in .env), so widening them on
+    // the laptop puts them in this dropdown without another change here.
+    const goldFrames = (config?.timeframes?.length ? config.timeframes : GOLD_TIMEFRAMES)
+      .filter((frame) => SUPPORTED_TIMEFRAMES.has(frame))
+      .sort((a, b) => a - b);
     return [
-      ...[10, 15].map((tf) => ({ value: `gold:${tf}`, label: `${goldSymbol} · M${tf}` })),
+      ...goldFrames.map((tf) => ({ value: `gold:${tf}`, label: `${goldSymbol} · ${timeframeLabel(tf)}` })),
       ...(backend.kind === "supabase"
-        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · M${tf}` }))
+        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · ${timeframeLabel(tf)}` }))
         : []),
-      ...setSymbols.map((symbol) => ({ value: `set:${symbol}`, label: `${symbol.replace(/^SET:/, "")} · M15 · delayed` }))
+      ...setSymbols.map((symbol) => ({ value: `set:${symbol}`, label: `${shortSymbol(symbol)} · M15 · delayed` })),
+      ...watchlist.map((entry) => ({
+        value: watchPaneKey(entry.symbol, entry.timeframe_minutes),
+        label: chartInstrumentLabel(watchPaneKey(entry.symbol, entry.timeframe_minutes), goldSymbol)
+      }))
     ];
-  }, [setTickers, goldSymbol]);
+  }, [setTickers, goldSymbol, config, watchlist]);
+
+  const showWatchInstrument = useCallback((symbol: string, timeframe: number) => {
+    setPanes((previous) => {
+      const next = [...previous];
+      while (next.length < 4) next.push("gold:10");
+      next[0] = watchPaneKey(symbol, timeframe);
+      return next;
+    });
+    chartPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   // Four charts at once need less height each than one. In fullscreen the CSS takes over and
   // the chart resizes itself to the cell, so this is only the starting size.
@@ -788,17 +1037,19 @@ export default function App() {
     }
     const series = candleSeries[candleSeriesKey(instrument.symbol, instrument.timeframe)];
     if (!series?.candles.length) {
-      const name = instrument.kind === "bitcoin" ? "Bitcoin" : instrument.symbol.replace(/^SET:/, "");
+      const name = instrument.kind === "bitcoin" ? "Bitcoin" : shortSymbol(instrument.symbol);
       const detail = instrument.kind === "set"
         ? "Closed SET candles arrive from the 15-minute-delayed feed."
         : instrument.kind === "bitcoin"
           ? "The cloud candle scanner has not stored this Bitcoin timeframe yet."
-          : backend.kind === "supabase"
-            ? "Gold candles appear after the laptop watcher or cloud failover publishes them."
-            : "Candles appear after the first evaluated MT5 bar.";
+          : instrument.kind === "watch"
+            ? "The watchlist scanner fills this chart on its next run, within one candle."
+            : backend.kind === "supabase"
+              ? "Gold candles appear after the laptop watcher or cloud failover publishes them."
+              : "Candles appear after the first evaluated MT5 bar.";
       return (
         <div className="empty-state compact">
-          <strong>No {name} candles yet for M{instrument.timeframe}</strong>
+          <strong>No {name} candles yet for {timeframeLabel(instrument.timeframe)}</strong>
           <p>{detail}</p>
         </div>
       );
@@ -806,6 +1057,7 @@ export default function App() {
     const forming = instrument.kind === "gold" && status?.watcher.connected
       ? status?.watcher.timeframes[String(instrument.timeframe)]?.forming || series.forming
       : null;
+    const delayed = instrument.kind === "set" || (instrument.kind === "watch" && isDelayedSymbol(instrument.symbol));
     return (
       <CandleChart
         candles={series.candles}
@@ -813,7 +1065,7 @@ export default function App() {
         symbol={instrument.symbol}
         timeframe={instrument.timeframe}
         forming={forming}
-        priceStatus={instrument.kind === "set" ? "delayed" : "closed"}
+        priceStatus={delayed ? "delayed" : "closed"}
         height={paneHeight}
         indicators={indicators}
       />
@@ -1162,6 +1414,19 @@ export default function App() {
           {backend.kind === "supabase" && (
             <>
               <div className="section-title">
+                <div>
+                  <span className="eyebrow">{t("Your instruments · M5 to D1 · no setup needed")}</span>
+                  <h2>{t("Watchlist")}</h2>
+                </div>
+              </div>
+              <WatchlistPanel
+                entries={watchlist}
+                error={watchError}
+                onChanged={() => void loadWatchlist()}
+                onSelect={showWatchInstrument}
+              />
+
+              <div className="section-title">
                 <div><span className="eyebrow">{t("SET stocks · 15m · TradingView (15-min delayed)")}</span><h2>{t("MACD by ticker")}</h2></div>
               </div>
               <section className="panel">
@@ -1179,7 +1444,7 @@ export default function App() {
                         className={`selectable${row.symbol === selectedSet ? " selected" : ""}`}
                         onClick={() => setSelectedSet(row.symbol)}
                       >
-                        <td>{row.symbol.replace(/^SET:/, "")}</td>
+                        <td>{shortSymbol(row.symbol)}</td>
                         <td>{row.macd?.toFixed(4) ?? "—"}</td>
                         <td>{row.signal?.toFixed(4) ?? "—"}</td>
                         <td className={(row.histogram ?? 0) >= 0 ? "mint" : "coral"}>{row.histogram?.toFixed(4) ?? "—"}</td>
@@ -1192,7 +1457,7 @@ export default function App() {
                 {selectedSet && (
                   <div className="set-detail-chart">
                     <div className="set-detail-heading">
-                      <strong>{selectedSet.replace(/^SET:/, "")} · M15 candlesticks</strong>
+                      <strong>{shortSymbol(selectedSet)} · M15 candlesticks</strong>
                       <span>{t("Closed bars · TradingView, delayed 15 minutes")}</span>
                     </div>
                     {candleSeries[candleSeriesKey(selectedSet, 15)]?.candles.length ? (
@@ -1206,7 +1471,7 @@ export default function App() {
                       />
                     ) : (
                       <div className="empty-state compact">
-                        <strong>No stored candlesticks for {selectedSet.replace(/^SET:/, "")} yet</strong>
+                        <strong>No stored candlesticks for {shortSymbol(selectedSet)} yet</strong>
                         <p>{t("The cloud scanner will populate this chart with closed, delayed M15 bars.")}</p>
                       </div>
                     )}
@@ -1241,7 +1506,7 @@ export default function App() {
               </div>
             ) : alerts.map((alert) => (
               <article className={`alert-row${highlightedAlert === alert.id ? " highlighted" : ""}`} key={alert.id}>
-                <div className="alert-symbol">{alert.direction === "info" ? "SYS" : `M${alert.timeframe_minutes}`}</div>
+                <div className="alert-symbol">{alert.direction === "info" ? "SYS" : timeframeLabel(alert.timeframe_minutes)}</div>
                 <div className="alert-main">
                   <strong className={alert.direction === "bearish" ? "coral" : alert.direction === "bullish" ? "mint" : undefined}>
                     {alertHeadline(alert)}

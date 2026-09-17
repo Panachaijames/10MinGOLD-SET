@@ -264,6 +264,31 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .set-detail-heading span { color: var(--muted); text-align: right; }
 @media (max-width: 720px) { .chart-legend-note { margin-left: 0; width: 100%; } .set-table th:nth-child(5), .set-table td:nth-child(5) { display: none; } }
 
+/* watchlist */
+.watch-search { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.watch-search input { flex: 1 1 240px; min-width: 0; }
+.watch-search select { flex: 0 0 auto; }
+.watch-hint { margin: 0 0 10px; color: var(--muted); font: .72rem "DM Mono", monospace; }
+.watch-results { list-style: none; margin: 0 0 14px; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; max-height: 280px; overflow-y: auto; }
+.watch-results li + li { border-top: 1px solid var(--line); }
+.watch-results button {
+  width: 100%; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  background: transparent; border: 0; color: var(--ink); text-align: left;
+  padding: 10px 12px; font: .74rem "DM Mono", monospace; cursor: pointer;
+}
+.watch-results button:hover:not(:disabled) { background: rgba(113,225,193,.07); }
+.watch-results button:disabled { opacity: .5; cursor: progress; }
+.watch-result-symbol { font-weight: 500; }
+.watch-result-detail { color: var(--muted); flex: 1 1 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-result-exchange { color: var(--muted); font-size: .66rem; letter-spacing: .05em; text-transform: uppercase; }
+.watch-result-add { margin-left: auto; color: var(--mint); }
+.tag-delayed { margin-left: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(214,173,92,.16); color: var(--gold); font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; }
+button.ghost.small { padding: 4px 10px; font-size: .68rem; border-radius: 8px; }
+@media (max-width: 720px) {
+  .watch-result-exchange { display: none; }
+  .watchlist-panel .set-table th:nth-child(3), .watchlist-panel .set-table td:nth-child(3) { display: none; }
+}
+
 .price-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; }
 .price-badge.live { background: rgba(113,225,193,.14); color: var(--mint); }
 .price-badge.closed { background: rgba(142,163,157,.12); color: var(--muted); }

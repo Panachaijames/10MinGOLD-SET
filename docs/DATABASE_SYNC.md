@@ -9,14 +9,16 @@ closed candle or lose a confirmed crossover.
 | Table | Written by | Read by | Retention and purpose |
 |---|---|---|---|
 | `alerts` | Windows gold watcher, later TradingView/SET ingestion, watchdog | PWA, push fan-out | Permanent trading-signal history. Deterministic `id` and a unique source/symbol/timeframe/bar/direction key make retries safe. |
-| `candles` | Windows gold watcher, `gold-scan`, `market-candles` | PWA chart | Last 14 days of gold M10/M15, SET M15, and Bitcoin M10/M15 OHLC and MACD values. Rows are upserted by symbol, timeframe and UTC bar-open time. |
+| `candles` | Windows gold watcher, `gold-scan`, `market-candles`, `watch-scan` | PWA chart | OHLC and MACD for every charted instrument, upserted by symbol, timeframe and UTC bar-open time. Retention is 400 bars' worth of the timeframe and never less than 14 days, so an H4 or D1 chart is not truncated to a fortnight. |
 | `heartbeats` | Windows watcher and Edge Functions | PWA, watchdog | One frequently-upserted row per component (`gold_mt5`, `gold_cloud`, `set_tv`, `market_candles`, `push_fanout`); no growing heartbeat log. |
 | `push_subscriptions` | Authenticated PWA | `push-fanout` | One current browser endpoint and key pair per installed device. Disabled when a push service reports that it is gone. |
 | `push_deliveries` | `push-fanout`, `push-receipt` | PWA latency/status | Per-alert/per-device delivery state and receipt timestamps; purged after 30 days. |
 | `set_state` | SET ingestion/scanner | PWA, SET scanner | Latest MACD state and cursor per stock **and timeframe**. Composite key `(symbol,timeframe)` supports M10 and M15. |
 | `set_macd_history` | SET scanner | Scanner state/diagnostics | Per-bar delayed scanner values retained for 60 days; PWA candlesticks now read OHLC from `candles`. |
 | `set_holidays` | Owner | SET session gate | Thai market closures; update annually from an authoritative calendar. |
-| `settings` | Owner and server jobs | Edge Functions and SQL jobs | Tickers, kill switches, dry-run flag, alert directions, session settings and push TTL. |
+| `settings` | Owner and server jobs | Edge Functions and SQL jobs | Tickers, kill switches, dry-run flags, alert directions, session settings, watchlist caps and push TTL. |
+| `watchlist` | Each member, through the PWA | `watch-scan`, `push-fanout` | One row per member per instrument and timeframe. RLS restricts every member to their own rows; database triggers enforce `watchlist_max_per_user` and `watchlist_max_instruments`. |
+| `watch_state` | `watch-scan` | PWA watchlist panel, scan gate | Scanner cursor per **distinct** `(symbol,timeframe)`, not per member: one scan serves everyone watching the same instrument. Purged a week after nobody watches it. |
 
 ## What is synchronized
 
@@ -49,6 +51,29 @@ exist unless that safeguard is explicitly overridden.
 3. The service worker posts its one-time receipt token to `push-receipt`.
 4. A two-minute sweep retries transiently failed pending deliveries; the watchdog detects stale
    components; weekly cleanup enforces retention.
+
+### Watchlist flow
+
+`watch-scan` is a generic version of `gold-scan`: it reads closed candles for an instrument from
+TradingView's anonymous chart socket, computes MACD(12,26,9) itself, and inserts an alert on a
+crossover. Nothing is configured per symbol, which is what lets a member add an instrument in the
+PWA and be alerted on it without the owner creating a TradingView alert.
+
+`ops.watch_scan_gate()` runs every five minutes, selects the instruments whose timeframe divides
+the tick (H4 and D1 are polled hourly, because on a session-bounded market their bars do not close
+on an epoch-aligned boundary), and chunks them across invocations. A catch-up run two minutes later
+picks up only what a failed or timed-out invocation left behind, judged by `watch_state.last_polled_at`.
+
+Routing is the part that differs from every other producer. A `watchlist` alert is **not** a
+broadcast: `push-fanout` looks up who watches that `(symbol,timeframe)` and creates delivery rows
+only for their devices. LINE is the owner's single channel, so a watchlist alert reaches it only
+when the owner is one of the watchers. Alert ids are identical to those the real-time TradingView
+webhook builds for the same bar, so an instrument covered by both is notified once.
+
+Delayed venues identify themselves: the feed reports `delay` (900 seconds for SET), which the
+scanner applies to its own clock before deciding whether a bar has closed, and names in the alert
+text. Daily bars on session markets close when the exchange does, read from the feed's session
+string, rather than 24 hours after the bar opened.
 
 ### SET and Bitcoin chart flow
 

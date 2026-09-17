@@ -67,6 +67,28 @@ export async function isUserCaller(req: Request): Promise<boolean> {
   return !error && !!data?.user;
 }
 
+/**
+ * The caller's user id when they hold a session AND membership.
+ *
+ * A signed-in account is not access: an anonymous sign-in that never redeemed a passcode has a
+ * valid JWT and no membership at all, and a revoked guest keeps their JWT until it expires. Any
+ * function that spends the project's resources on a caller's behalf checks membership, not
+ * merely authentication.
+ */
+export async function callerMember(req: Request): Promise<{ userId: string } | null> {
+  const { bearer } = callerCredentials(req);
+  if (!bearer || bearer.startsWith("sb_")) return null;
+  const client = createClient(projectUrl(), publishableKey(), {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${bearer}` } },
+  });
+  const { data, error } = await client.auth.getUser(bearer);
+  if (error || !data?.user) return null;
+  const { data: member, error: memberError } = await client.rpc("is_member");
+  if (memberError || member !== true) return null;
+  return { userId: data.user.id };
+}
+
 export function unauthorized(detail = "unauthorized"): Response {
   return Response.json({ error: detail }, { status: 401 });
 }

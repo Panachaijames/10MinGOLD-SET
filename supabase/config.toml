@@ -402,6 +402,15 @@ verify_jwt = false
 [functions.market-candles]
 verify_jwt = false
 
+[functions.watch-scan]
+verify_jwt = false
+
+# Called by the PWA with a member's own JWT, which this function verifies itself so it can also
+# check membership: a signed-in account that never redeemed a passcode must not be able to spend
+# the project's search quota.
+[functions.symbol-search]
+verify_jwt = false
+
 # TradingView cannot send a Supabase JWT or any custom header, so this one authenticates the
 # caller with its own shared secret (TV_WEBHOOK_SECRET) carried in the alert body.
 # The caller presents their own user JWT, which this function verifies itself so it can tell a

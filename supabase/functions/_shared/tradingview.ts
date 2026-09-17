@@ -35,6 +35,28 @@ export interface Bar {
   volume: number | null;
 }
 
+/**
+ * What the feed says about the instrument itself, taken from the `symbol_resolved` packet that
+ * precedes the bars. `session` is TradingView's compact trading-hours string ("24x7", or
+ * "0955-1230A0900E0955-1231U1355-1640" for SET) and `timezone` the IANA zone it is written in.
+ * Together they are the only way to know when a daily bar actually stopped moving.
+ */
+export interface SymbolMeta {
+  pro_name?: string;
+  session?: string;
+  timezone?: string;
+  type?: string;
+  exchange?: string;
+  listed_exchange?: string;
+  currency_code?: string;
+  description?: string;
+}
+
+export interface Series {
+  bars: Bar[];
+  meta: SymbolMeta | null;
+}
+
 const frame = (payload: unknown): string => {
   const body = typeof payload === "string" ? payload : JSON.stringify(payload);
   return `~m~${body.length}~m~${body}`;
@@ -56,12 +78,14 @@ const unframe = (raw: string): unknown[] =>
 
 const sessionId = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 14)}`;
 
-export async function fetchBars(symbol: string, interval: string, count: number): Promise<Bar[]> {
+/** One request for a symbol's bars, plus whatever the feed said about the symbol itself. */
+export async function fetchSeries(symbol: string, interval: string, count: number): Promise<Series> {
   const { default: WebSocket } = await import("npm:ws@8.18.0");
-  return await new Promise<Bar[]>((resolve, reject) => {
+  return await new Promise<Series>((resolve, reject) => {
     const socket = new WebSocket(ENDPOINT, { origin: ORIGIN });
     const chart = sessionId("cs");
     let settled = false;
+    let meta: SymbolMeta | null = null;
 
     const finish = (error: Error | null, bars?: Bar[]) => {
       if (settled) return;
@@ -73,7 +97,7 @@ export async function fetchBars(symbol: string, interval: string, count: number)
         // The socket is being abandoned either way.
       }
       if (error) reject(error);
-      else resolve(bars ?? []);
+      else resolve({ bars: bars ?? [], meta });
     };
 
     const timer = setTimeout(
@@ -102,6 +126,10 @@ export async function fetchBars(symbol: string, interval: string, count: number)
           finish(new Error(`TradingView ${message.m} for ${symbol} ${interval}m: ${JSON.stringify(message.p)}`));
           return;
         }
+        if (message.m === "symbol_resolved") {
+          meta = (message.p?.[2] as SymbolMeta | undefined) ?? null;
+          continue;
+        }
         if (message.m !== "timescale_update" && message.m !== "du") continue;
         const series = (message.p?.[1] as Record<string, { s?: { v: number[] }[] }> | undefined)?.$prices;
         const rows = series?.s;
@@ -125,6 +153,10 @@ export async function fetchBars(symbol: string, interval: string, count: number)
     socket.on("error", (error: Error) => finish(error));
     socket.on("close", () => finish(new Error(`TradingView closed the connection for ${symbol} before sending bars`)));
   });
+}
+
+export async function fetchBars(symbol: string, interval: string, count: number): Promise<Bar[]> {
+  return (await fetchSeries(symbol, interval, count)).bars;
 }
 
 /**
