@@ -135,7 +135,7 @@ async function scanOne(
   client: Client,
   instrument: Instrument,
   state: StateRow | undefined,
-  options: { dryRun: boolean; directions: Set<Direction>; budgetEndsAt: number },
+  options: { dryRun: boolean; budgetEndsAt: number },
 ): Promise<Record<string, unknown>> {
   const { symbol, timeframe } = instrument;
   const entry: Record<string, unknown> = { symbol, timeframe };
@@ -204,9 +204,12 @@ async function scanOne(
       const direction = crossDirection(points[last - 1].histogram, point.histogram);
       entry.result = direction ?? "no-cross";
       const ageMs = Date.now() - series.delaySeconds * 1000 - barCloseMs(bar.time, timeframe, series.meta);
-      if (direction && !options.directions.has(direction)) {
-        entry.result = `muted:${direction}`;
-      } else if (direction && ageMs > maxAgeMs(timeframe)) {
+      // Direction is deliberately NOT filtered here. Each member chooses it per instrument, and
+      // one scan serves everybody watching it: dropping a bearish cross because the project-wide
+      // `alert_directions` excludes it would silently override the member who asked for exactly
+      // that. The fan-out applies each person's own rules instead. `watchlist_enabled` and
+      // `watchlist_dry_run` remain the kill switches for this producer.
+      if (direction && ageMs > maxAgeMs(timeframe)) {
         entry.result = `stale:${Math.round(ageMs / 1000)}s`;
       } else if (direction) {
         const alert = renderAlert(instrument, direction, bar, point, points[last - 1], series);
@@ -307,11 +310,10 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
   const budgetEndsAt = startedAt + WAIT_BUDGET_MS;
 
-  const [enabled, dryRun, settleMs, directionList] = await Promise.all([
+  const [enabled, dryRun, settleMs] = await Promise.all([
     getSetting<boolean>(client, "watchlist_enabled", true),
     getSetting<boolean>(client, "watchlist_dry_run", false),
     getSetting<number>(client, "watchlist_settle_ms", 2500),
-    getSetting<Direction[]>(client, "alert_directions", ["bullish", "bearish"]),
   ]);
   if (!enabled && !force) return Response.json({ skipped: "watchlist_enabled is false" });
 
@@ -336,7 +338,7 @@ Deno.serve(async (req) => {
       ((states ?? []) as StateRow[]).map((row) => [`${row.symbol}|${row.timeframe}`, row]),
     );
 
-    const options = { dryRun, directions: new Set(directionList), budgetEndsAt };
+    const options = { dryRun, budgetEndsAt };
     const summary = await mapBounded(instruments, MAX_CONCURRENCY, (instrument) =>
       scanOne(client, instrument, byInstrument.get(`${instrument.symbol}|${instrument.timeframe}`), options));
 

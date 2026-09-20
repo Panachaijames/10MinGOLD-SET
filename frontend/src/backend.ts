@@ -1,7 +1,10 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import {
+  AlertChannel,
   AlertRecord,
   CandleSeries,
+  Direction,
+  NotificationPrefs,
   PublicConfig,
   SetMacdPoint,
   SetTickerState,
@@ -75,6 +78,10 @@ export interface Backend {
   searchSymbols?(text: string): Promise<SymbolHit[]>;
   addWatch?(input: { symbol: string; timeframe: number; label?: string | null }): Promise<void>;
   removeWatch?(id: string): Promise<void>;
+  /** Change one instrument's delivery settings without touching whether it is scanned. */
+  updateWatch?(id: string, patch: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>): Promise<void>;
+  notificationPrefs?(): Promise<NotificationPrefs>;
+  saveNotificationPrefs?(prefs: Pick<NotificationPrefs, "quiet_from" | "quiet_to" | "time_zone">): Promise<void>;
   /** Sign in as a guest holding one of the owner's passcodes. */
   redeemPasscode?(code: string): Promise<void>;
   /** True when the signed-in account owns the deployment and may issue passcodes. */
@@ -603,10 +610,13 @@ class SupabaseBackend implements Backend {
   async watchlist(): Promise<WatchlistEntry[]> {
     const { data, error } = await this.client
       .from("watchlist")
-      .select("id,symbol,timeframe,label,enabled,created_at")
+      .select("id,symbol,timeframe,label,enabled,created_at,notify,directions,channels")
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
-    type Row = { id: string; symbol: string; timeframe: number; label: string | null; enabled: boolean; created_at: string };
+    type Row = {
+      id: string; symbol: string; timeframe: number; label: string | null; enabled: boolean; created_at: string;
+      notify: boolean | null; directions: Direction[] | null; channels: AlertChannel[] | null;
+    };
     const rows = (data as Row[]) || [];
     if (!rows.length) return [];
 
@@ -638,6 +648,11 @@ class SupabaseBackend implements Backend {
         label: row.label,
         enabled: row.enabled,
         created_at: row.created_at,
+        // Defaults match the database defaults, so a row written before these columns existed
+        // reads as "notify me about both directions", which is what it did.
+        notify: row.notify ?? true,
+        directions: row.directions?.length ? row.directions : ["bullish", "bearish"],
+        channels: row.channels?.length ? row.channels : ["push"],
         last_bar_time: state?.last_bar_time ? new Date(Number(state.last_bar_time) * 1000).toISOString() : null,
         close: state?.last_close ?? null,
         macd: state?.last_macd ?? null,
@@ -674,6 +689,57 @@ class SupabaseBackend implements Backend {
 
   async removeWatch(id: string): Promise<void> {
     const { error } = await this.client.from("watchlist").delete().eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+
+  async updateWatch(
+    id: string,
+    patch: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>
+  ): Promise<void> {
+    const { error } = await this.client.from("watchlist").update(patch).eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+
+  /**
+   * The member's own preferences, or the defaults when they have never saved any. RLS means the
+   * unfiltered select can only ever return this account's row.
+   */
+  async notificationPrefs(): Promise<NotificationPrefs> {
+    const { data, error } = await this.client
+      .from("notification_prefs")
+      .select("quiet_from,quiet_to,time_zone,line_user_id")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok";
+    type Row = { quiet_from: string | null; quiet_to: string | null; time_zone: string; line_user_id: string | null };
+    const row = data as Row | null;
+    return {
+      // Postgres returns "22:00:00"; <input type="time"> wants "22:00".
+      quiet_from: row?.quiet_from ? row.quiet_from.slice(0, 5) : null,
+      quiet_to: row?.quiet_to ? row.quiet_to.slice(0, 5) : null,
+      time_zone: row?.time_zone || browserZone,
+      line_connected: Boolean(row?.line_user_id)
+    };
+  }
+
+  async saveNotificationPrefs(
+    prefs: Pick<NotificationPrefs, "quiet_from" | "quiet_to" | "time_zone">
+  ): Promise<void> {
+    const quietFrom = prefs.quiet_from || null;
+    const quietTo = prefs.quiet_to || null;
+    if ((quietFrom === null) !== (quietTo === null)) {
+      throw new Error("Set both ends of the quiet window, or neither.");
+    }
+    if (quietFrom !== null && quietFrom === quietTo) {
+      throw new Error("A quiet window needs a start and an end that differ.");
+    }
+    const { data: session } = await this.client.auth.getSession();
+    const userId = session.session?.user.id;
+    if (!userId) throw new Error("Sign in again to change notification settings.");
+    const { error } = await this.client.from("notification_prefs").upsert(
+      { user_id: userId, quiet_from: quietFrom, quiet_to: quietTo, time_zone: prefs.time_zone },
+      { onConflict: "user_id" }
+    );
     if (error) throw new Error(error.message);
   }
 

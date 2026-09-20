@@ -263,11 +263,34 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .watch-result-detail { color: var(--muted); flex: 1 1 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .watch-result-exchange { color: var(--muted); font-size: .66rem; letter-spacing: .05em; text-transform: uppercase; }
 .watch-result-add { margin-left: auto; color: var(--mint); }
+.alert-summary { white-space: nowrap; font: .68rem "DM Mono", monospace; }
+.watch-settings > td { background: rgba(113,225,193,.035); padding: 14px 12px; }
+.watch-settings-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+.watch-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: .74rem; cursor: pointer; }
+.watch-toggle input { flex: 0 0 auto; min-width: 0; width: 16px; height: 16px; accent-color: var(--mint); }
+.watch-option { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.watch-option-label { color: var(--muted); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; }
+.watch-settings .chip:disabled { opacity: .4; cursor: not-allowed; }
+
+.quiet-panel { margin-top: 14px; padding: 18px 20px; }
+.quiet-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 20px; }
+.quiet-copy { display: flex; flex-direction: column; gap: 4px; max-width: 46ch; }
+.quiet-copy span { color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.quiet-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.quiet-controls label { display: flex; flex-direction: column; gap: 5px; }
+.quiet-controls label span { color: var(--muted); font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; }
+.quiet-controls input { flex: 0 0 auto; width: 8.5rem; }
+.quiet-panel .watch-hint { margin: 12px 0 0; }
+
 .watch-row-error { display: block; margin-top: 3px; max-width: 34ch; color: var(--coral); font-size: .64rem; line-height: 1.35; white-space: normal; }
 .tag-delayed { margin-left: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(214,173,92,.16); color: var(--gold); font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; }
 button.ghost.small { padding: 4px 10px; font-size: .68rem; border-radius: 8px; }
 @media (max-width: 720px) {
   .watch-result-exchange { display: none; }
+  .quiet-row { flex-direction: column; align-items: stretch; }
+  .quiet-controls { justify-content: space-between; }
+  .quiet-controls input { width: 100%; }
+  .quiet-controls label { flex: 1 1 8rem; }
   .watchlist-panel .set-table th:nth-child(3), .watchlist-panel .set-table td:nth-child(3) { display: none; }
 }
 

@@ -169,6 +169,14 @@ export interface SymbolHit {
   continuous?: boolean;
 }
 
+export type AlertChannel = "push" | "line";
+
+/**
+ * A watched instrument and, separately, what it is allowed to do about it.
+ *
+ * `enabled` means only "scan and chart this". Everything about delivery is the rest: muting an
+ * instrument keeps its chart and its alert history intact and just stops the notification.
+ */
 export interface WatchlistEntry {
   id: string;
   symbol: string;
@@ -176,6 +184,9 @@ export interface WatchlistEntry {
   label: string | null;
   enabled: boolean;
   created_at: string;
+  notify: boolean;
+  directions: Direction[];
+  channels: AlertChannel[];
   /** Scanner state, absent until the first scan covers the instrument. */
   last_bar_time: string | null;
   close: number | null;
@@ -184,6 +195,16 @@ export interface WatchlistEntry {
   histogram: number | null;
   last_polled_at: string | null;
   last_error: string | null;
+}
+
+/** Per-member delivery preferences: one row per account, independent of any instrument. */
+export interface NotificationPrefs {
+  /** Local times, "HH:MM". Both null means no quiet window at all. */
+  quiet_from: string | null;
+  quiet_to: string | null;
+  time_zone: string;
+  /** Whether this account has a LINE destination on file, so the UI can say why LINE is off. */
+  line_connected: boolean;
 }
 
 async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {

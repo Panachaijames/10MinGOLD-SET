@@ -4,6 +4,7 @@ import {
   AlertRecord,
   CandleSeries,
   PublicConfig,
+  NotificationPrefs,
   SetTickerState,
   StatusResponse,
   SymbolHit,
@@ -298,11 +299,96 @@ function alertHeadline(alert: AlertRecord): string {
   return `${prefix}${alert.direction === "bearish" ? "▼ Bearish" : "▲ Bullish"} MACD crossover`;
 }
 
+interface QuietHoursPanelProps {
+  prefs: NotificationPrefs | null;
+  onSaved: (prefs: NotificationPrefs) => void;
+}
+
+/**
+ * A daily window in which nothing is pushed, for the whole account rather than per instrument.
+ *
+ * It suppresses delivery, not detection: the crossover is still found, still charted and still
+ * in the alert history when the window ends. That is the point — an overnight crypto signal is
+ * worth having in the morning even when it is not worth waking up for.
+ */
+function QuietHoursPanel({ prefs, onSaved }: QuietHoursPanelProps) {
+  const [from, setFrom] = useState(prefs?.quiet_from ?? "");
+  const [to, setTo] = useState(prefs?.quiet_to ?? "");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setFrom(prefs?.quiet_from ?? "");
+    setTo(prefs?.quiet_to ?? "");
+  }, [prefs?.quiet_from, prefs?.quiet_to]);
+
+  const zone = prefs?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok";
+  const dirty = (prefs?.quiet_from ?? "") !== from || (prefs?.quiet_to ?? "") !== to;
+
+  const save = async (nextFrom: string, nextTo: string) => {
+    if (!backend.saveNotificationPrefs) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await backend.saveNotificationPrefs({ quiet_from: nextFrom || null, quiet_to: nextTo || null, time_zone: zone });
+      onSaved({ quiet_from: nextFrom || null, quiet_to: nextTo || null, time_zone: zone, line_connected: prefs?.line_connected ?? false });
+      setMessage(nextFrom ? t("Quiet hours saved.") : t("Quiet hours turned off."));
+    } catch (saveError) {
+      setMessage(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="panel quiet-panel">
+      <div className="quiet-row">
+        <div className="quiet-copy">
+          <strong>{t("Quiet hours")}</strong>
+          <span>{t("No notifications inside this window. Alerts still appear in the history and on the charts.")}</span>
+        </div>
+        <div className="quiet-controls">
+          <label>
+            <span>{t("From")}</span>
+            <input type="time" value={from} onChange={(event) => setFrom(event.target.value)} />
+          </label>
+          <label>
+            <span>{t("To")}</span>
+            <input type="time" value={to} onChange={(event) => setTo(event.target.value)} />
+          </label>
+          <button className="primary" disabled={saving || !dirty} onClick={() => void save(from, to)}>
+            {saving ? t("Saving…") : t("Save")}
+          </button>
+          {(prefs?.quiet_from || from) && (
+            <button className="ghost small" disabled={saving} onClick={() => { setFrom(""); setTo(""); void save("", ""); }}>
+              {t("Turn off")}
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="watch-hint">{t("Times are in")} {zone}.</p>
+      {message && <p className="watch-hint">{message}</p>}
+    </section>
+  );
+}
+
 interface WatchlistPanelProps {
   entries: WatchlistEntry[];
   error: string;
+  /** True when this account actually has somewhere for LINE messages to go. */
+  lineAvailable: boolean;
   onChanged: () => void;
   onSelect: (symbol: string, timeframe: number) => void;
+}
+
+/** What a row's delivery settings add up to, in the width of a table cell. */
+function alertSummary(entry: WatchlistEntry): string {
+  if (!entry.notify) return t("Muted");
+  const direction = entry.directions.length === 2
+    ? "▲▼"
+    : entry.directions[0] === "bullish" ? "▲" : "▼";
+  const channels = entry.channels.map((channel) => (channel === "push" ? t("Push") : "LINE")).join(" + ");
+  return `${direction} · ${channels}`;
 }
 
 /**
@@ -312,13 +398,14 @@ interface WatchlistPanelProps {
  * people watch it, and the fan-out sends the resulting alert only to the people who asked for
  * it. Removing a row stops the notifications for this account and nobody else's.
  */
-function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelProps) {
+function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: WatchlistPanelProps) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SymbolHit[]>([]);
   const [timeframe, setTimeframe] = useState(15);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
   const searchToken = useRef(0);
 
   // Search on a pause in typing rather than on every keystroke: each call is a request the
@@ -366,6 +453,33 @@ function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelP
     } finally {
       setBusy("");
     }
+  };
+
+  /**
+   * Delivery settings save on click rather than behind a Save button: each one is a single
+   * independent field, and a half-applied set of alert rules is worse than none.
+   */
+  const patch = async (
+    entry: WatchlistEntry,
+    changes: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>
+  ) => {
+    if (!backend.updateWatch) return;
+    setBusy(entry.id);
+    setMessage("");
+    try {
+      await backend.updateWatch(entry.id, changes);
+      onChanged();
+    } catch (patchError) {
+      setMessage(patchError instanceof Error ? patchError.message : String(patchError));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  /** Toggle one value in a list that is not allowed to become empty. */
+  const toggleIn = <T,>(list: T[], value: T): T[] | null => {
+    const next = list.includes(value) ? list.filter((entry) => entry !== value) : [...list, value];
+    return next.length ? next : null;
   };
 
   const remove = async (entry: WatchlistEntry) => {
@@ -424,17 +538,17 @@ function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelP
         <thead>
           <tr>
             <th>{t("Instrument")}</th><th>{t("Timeframe")}</th><th>MACD</th><th>{t("Hist")}</th>
-            <th>{t("Last closed bar")}</th><th />
+            <th>{t("Last closed bar")}</th><th>{t("Alerts")}</th><th />
           </tr>
         </thead>
         <tbody>
           {entries.length === 0 ? (
             <tr>
-              <td className="empty-cell" colSpan={6}>
+              <td className="empty-cell" colSpan={7}>
                 {t("Nothing on your list yet. Search above to add an instrument.")}
               </td>
             </tr>
-          ) : entries.map((entry) => (
+          ) : entries.flatMap((entry) => [
             <tr
               key={entry.id}
               className="selectable"
@@ -455,6 +569,18 @@ function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelP
               <td>{formatTime(entry.last_bar_time, false)}</td>
               <td>
                 <button
+                  className={entry.notify ? "chip on alert-summary" : "chip alert-summary"}
+                  aria-expanded={editing === entry.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setEditing((current) => (current === entry.id ? null : entry.id));
+                  }}
+                >
+                  {alertSummary(entry)}
+                </button>
+              </td>
+              <td>
+                <button
                   className="ghost small"
                   disabled={busy === entry.id}
                   onClick={(event) => { event.stopPropagation(); void remove(entry); }}
@@ -463,8 +589,74 @@ function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelP
                   {busy === entry.id ? "…" : t("Remove")}
                 </button>
               </td>
-            </tr>
-          ))}
+            </tr>,
+            editing === entry.id ? (
+              <tr key={`${entry.id}:settings`} className="watch-settings">
+                <td colSpan={7}>
+                  <div className="watch-settings-grid">
+                    <label className="watch-toggle">
+                      <input
+                        type="checkbox"
+                        checked={entry.notify}
+                        disabled={busy === entry.id}
+                        onChange={(event) => void patch(entry, { notify: event.target.checked })}
+                      />
+                      <span>{t("Notify me")}</span>
+                    </label>
+
+                    <div className="watch-option" role="group" aria-label={t("Directions")}>
+                      <span className="watch-option-label">{t("Direction")}</span>
+                      {(["bullish", "bearish"] as const).map((direction) => (
+                        <button
+                          key={direction}
+                          type="button"
+                          className={entry.directions.includes(direction) ? "chip on" : "chip"}
+                          aria-pressed={entry.directions.includes(direction)}
+                          disabled={!entry.notify || busy === entry.id}
+                          onClick={() => {
+                            const next = toggleIn(entry.directions, direction);
+                            // Turning off the last direction would mean "notify me about
+                            // nothing", which is what the mute is for.
+                            if (!next) setMessage(t("Keep at least one direction, or mute the instrument."));
+                            else void patch(entry, { directions: next });
+                          }}
+                        >
+                          {direction === "bullish" ? `▲ ${t("Bullish")}` : `▼ ${t("Bearish")}`}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="watch-option" role="group" aria-label={t("Channels")}>
+                      <span className="watch-option-label">{t("Send to")}</span>
+                      {(["push", "line"] as const).map((channel) => {
+                        const unavailable = channel === "line" && !lineAvailable;
+                        return (
+                          <button
+                            key={channel}
+                            type="button"
+                            className={entry.channels.includes(channel) ? "chip on" : "chip"}
+                            aria-pressed={entry.channels.includes(channel)}
+                            disabled={!entry.notify || busy === entry.id || unavailable}
+                            title={unavailable ? t("This account has no LINE destination yet.") : undefined}
+                            onClick={() => {
+                              const next = toggleIn(entry.channels, channel);
+                              if (!next) setMessage(t("Keep at least one channel, or mute the instrument."));
+                              else void patch(entry, { channels: next });
+                            }}
+                          >
+                            {channel === "push" ? t("Push") : "LINE"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <p className="watch-hint">
+                    {t("Muting keeps the instrument scanned and charted; only the notification stops.")}
+                  </p>
+                </td>
+              </tr>
+            ) : null
+          ])}
         </tbody>
       </table>
     </section>
@@ -524,6 +716,7 @@ export default function App() {
   const [selectedSet, setSelectedSet] = useState<string>("");
   const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
   const [watchError, setWatchError] = useState("");
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs | null>(null);
   const highlightedAlert = useMemo(() => new URLSearchParams(window.location.search).get("alert"), []);
   const refreshing = useRef(false);
   const chartPanel = useRef<HTMLElement | null>(null);
@@ -554,6 +747,17 @@ export default function App() {
     } catch (listError) {
       setWatchError(listError instanceof Error ? listError.message : String(listError));
     }
+  }, [authed]);
+
+  useEffect(() => {
+    if (!authed || !backend.notificationPrefs) return;
+    let cancelled = false;
+    // Preferences are small and rarely change, so they are loaded once per session rather than
+    // on every refresh; the panel updates its own copy after a save.
+    void backend.notificationPrefs()
+      .then((prefs) => { if (!cancelled) setNotificationPrefs(prefs); })
+      .catch(() => { if (!cancelled) setNotificationPrefs(null); });
+    return () => { cancelled = true; };
   }, [authed]);
 
   // `refresh` must not take a dependency on the watchlist loader: it would then change identity
@@ -1385,9 +1589,13 @@ export default function App() {
               <WatchlistPanel
                 entries={watchlist}
                 error={watchError}
+                // The owner's LINE destination is the function's own secret; a guest has one only
+                // if it has been recorded for them, so the chip is not offered blindly.
+                lineAvailable={Boolean(config?.line_configured) && (isOwner || Boolean(notificationPrefs?.line_connected))}
                 onChanged={() => void loadWatchlist()}
                 onSelect={showWatchInstrument}
               />
+              <QuietHoursPanel prefs={notificationPrefs} onSaved={setNotificationPrefs} />
 
               <div className="section-title">
                 <div><span className="eyebrow">{t("SET stocks · 15m · TradingView (15-min delayed)")}</span><h2>{t("MACD by ticker")}</h2></div>

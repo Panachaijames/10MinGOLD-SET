@@ -8,6 +8,7 @@
 //   1, 3, 5, 15, 30, 45, 60, 120, 240 and 1D all resolve for an unauthenticated session and
 //   return 320 bars on request; 10 is refused with `series_error: custom_resolution`.
 import { fetchSeries, resample, type Bar, type Series, type SymbolMeta } from "./tradingview.ts";
+import { zoneParts, zonedTimeToUtcMs } from "./timezone.ts";
 
 export const DAILY_MINUTES = 1440;
 
@@ -89,60 +90,6 @@ export function hasExpired(meta: SymbolMeta | null, nowMs = Date.now()): boolean
 }
 
 // ------------------------------------------------------------------ session hours
-
-interface ZoneParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-}
-
-function zoneParts(utcMs: number, timeZone: string): ZoneParts {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  const values: Record<string, number> = {};
-  for (const part of formatter.formatToParts(new Date(utcMs))) {
-    if (part.type !== "literal") values[part.type] = Number(part.value);
-  }
-  return {
-    year: values.year,
-    month: values.month,
-    day: values.day,
-    hour: values.hour,
-    minute: values.minute,
-    second: values.second,
-  };
-}
-
-/** How far the zone is ahead of UTC at a given instant. */
-function zoneOffsetMs(utcMs: number, timeZone: string): number {
-  const parts = zoneParts(utcMs, timeZone);
-  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - utcMs;
-}
-
-/** The UTC instant of a wall-clock time in a zone. The second pass settles DST transitions. */
-function zonedTimeToUtcMs(
-  year: number,
-  month: number,
-  day: number,
-  hour: number,
-  minute: number,
-  timeZone: string,
-): number {
-  const asIfUtc = Date.UTC(year, month - 1, day, hour, minute);
-  const firstPass = asIfUtc - zoneOffsetMs(asIfUtc, timeZone);
-  return asIfUtc - zoneOffsetMs(firstPass, timeZone);
-}
 
 /**
  * Minutes past local midnight at which the instrument stops trading for the day.

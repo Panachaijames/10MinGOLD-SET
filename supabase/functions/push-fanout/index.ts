@@ -13,6 +13,12 @@ import {
 } from "@negrel/webpush";
 import { isSecretCaller, isUserCaller, unauthorized } from "../_shared/auth.ts";
 import { adminClient, corsHeaders, getSetting, heartbeat } from "../_shared/db.ts";
+import {
+  recipientsFor,
+  type NotificationPrefs,
+  type Recipient,
+  type WatchRow,
+} from "../_shared/notify.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
 // Ambient fallback for IDEs without the Deno extension active
@@ -136,39 +142,66 @@ async function sendOne(
   }
 }
 
+async function ownerIds(client: ReturnType<typeof adminClient>): Promise<Set<string>> {
+  const { data } = await client.from("app_members").select("user_id").eq("is_owner", true).is("revoked_at", null);
+  return new Set(((data ?? []) as { user_id: string }[]).map((row) => row.user_id));
+}
+
 /**
- * Which accounts asked for this alert, or null when it belongs to everybody.
+ * Who asked for this alert, or null when it belongs to everybody.
  *
- * Gold and SET are the deployment's own instruments and always went to every enrolled device.
- * A watchlist alert is different: one member added that symbol, and it is their notification,
- * not a broadcast. Everyone watching the same symbol and timeframe shares the single scan and
- * each gets their own delivery row.
+ * Gold, SET and system alerts are the deployment's own and always went to every enrolled device;
+ * that is unchanged. A watchlist alert is one member's, and now carries their rules with it: a
+ * muted instrument, a direction they do not trade, or their quiet hours all drop them from the
+ * audience. The alert itself is still written, charted and listed in the history either way.
  */
-async function audienceFor(client: ReturnType<typeof adminClient>, alert: AlertRow | null): Promise<string[] | null> {
+async function audienceFor(
+  client: ReturnType<typeof adminClient>,
+  alert: AlertRow | null,
+): Promise<Recipient[] | null> {
   if (!alert || alert.source !== "watchlist") return null;
   const { data, error } = await client
     .from("watchlist")
-    .select("user_id")
+    .select("user_id,notify,directions,channels")
     .eq("symbol", alert.symbol)
     .eq("timeframe", alert.timeframe)
     .eq("enabled", true);
   if (error) throw error;
-  return [...new Set(((data ?? []) as { user_id: string }[]).map((row) => row.user_id))];
+  const rows = (data ?? []) as WatchRow[];
+  if (!rows.length) return [];
+
+  const { data: prefRows } = await client
+    .from("notification_prefs")
+    .select("user_id,quiet_from,quiet_to,time_zone,line_user_id")
+    .in("user_id", [...new Set(rows.map((row) => row.user_id))]);
+  const prefsByUser = new Map(
+    ((prefRows ?? []) as NotificationPrefs[]).map((row) => [row.user_id, row]),
+  );
+  return recipientsFor(
+    rows,
+    prefsByUser,
+    alert.direction,
+    Date.now(),
+    Deno.env.get("LINE_USER_ID") ?? null,
+    await ownerIds(client),
+  );
 }
 
-async function fanOut(alert: AlertRow | null, kind: "alert" | "test") {
+async function fanOut(alert: AlertRow | null, kind: "alert" | "test", audience?: Recipient[] | null) {
   const client = adminClient();
   const ttl = await getSetting<number>(client, "push_ttl_seconds", 600);
-  const audience = await audienceFor(client, alert);
-  // The last member watching an instrument can remove it between the scan and the fan-out.
-  if (audience !== null && audience.length === 0) {
+  const targets = audience === undefined ? await audienceFor(client, alert) : audience;
+  // Nobody wants this one pushed: everybody watching it is muted, asleep, or takes the other
+  // direction. The last watcher can also have removed it between the scan and the fan-out.
+  const pushUsers = targets?.filter((recipient) => recipient.channels.has("push")).map((r) => r.userId);
+  if (pushUsers !== undefined && pushUsers.length === 0) {
     return { subscriptions: 0, accepted: 0, failed: 0, skipped: 0 };
   }
   let query = client
     .from("push_subscriptions")
     .select("endpoint,p256dh,auth,platform")
     .eq("enabled", true);
-  if (audience !== null) query = query.in("user_id", audience);
+  if (pushUsers !== undefined) query = query.in("user_id", pushUsers);
   const { data: subscriptions, error } = await query;
   if (error) throw error;
   const result = { subscriptions: subscriptions?.length ?? 0, accepted: 0, failed: 0, skipped: 0 };
@@ -279,25 +312,17 @@ async function sweep() {
  * Gold, SET and system alerts are the deployment's own and always go; a watchlist alert goes
  * only when the owner is one of the people watching that instrument.
  */
-async function lineWantsAlert(alert: AlertRow | null): Promise<boolean> {
-  if (!alert || alert.source !== "watchlist") return true;
-  const client = adminClient();
-  const { data: owners } = await client
-    .from("app_members")
-    .select("user_id")
-    .eq("is_owner", true)
-    .is("revoked_at", null);
-  const ownerIds = ((owners ?? []) as { user_id: string }[]).map((row) => row.user_id);
-  if (!ownerIds.length) return false;
-  const { data: watched } = await client
-    .from("watchlist")
-    .select("user_id")
-    .eq("symbol", alert.symbol)
-    .eq("timeframe", alert.timeframe)
-    .eq("enabled", true)
-    .in("user_id", ownerIds)
-    .limit(1);
-  return ((watched ?? []) as unknown[]).length > 0;
+function lineDestinations(alert: AlertRow | null, audience: Recipient[] | null): string[] {
+  // Gold, SET and system alerts keep going to the project's own LINE destination, as before.
+  if (audience === null) {
+    const owner = Deno.env.get("LINE_USER_ID");
+    return owner ? [owner] : [];
+  }
+  const destinations = new Set<string>();
+  for (const recipient of audience) {
+    if (recipient.channels.has("line") && recipient.lineUserId) destinations.add(recipient.lineUserId);
+  }
+  return [...destinations];
 }
 
 /** What happened on the LINE leg, so a silent misconfiguration cannot look like success. */
@@ -308,13 +333,13 @@ export interface LineResult {
   error?: string;
 }
 
-async function sendLineAlert(alert: AlertRow | null): Promise<LineResult> {
+async function sendLineAlert(alert: AlertRow | null, toUserId?: string): Promise<LineResult> {
   const token = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN");
-  const userId = Deno.env.get("LINE_USER_ID");
+  const userId = toUserId ?? Deno.env.get("LINE_USER_ID");
   if (!token || !userId) {
     // The laptop reads these from .env; the function has its own secrets and cannot see that
     // file, so this is the usual reason LINE works locally and not from the cloud.
-    const missing = [!token ? "LINE_CHANNEL_ACCESS_TOKEN" : null, !userId ? "LINE_USER_ID" : null]
+    const missing = [!token ? "LINE_CHANNEL_ACCESS_TOKEN" : null, !userId ? "a LINE destination" : null]
       .filter(Boolean)
       .join(" and ");
     console.error(`LINE is not configured on this function: ${missing} not set`);
@@ -385,11 +410,19 @@ Deno.serve(async (req) => {
 
   if (mode === "webhook") {
     const record = body.record as AlertRow;
+    // Resolved once and handed to both legs: the two must agree about who wanted this alert,
+    // and it saves repeating the watchlist and preference queries.
+    const audience = await audienceFor(adminClient(), record).catch((error) => {
+      console.error("audience lookup failed", error);
+      return null;
+    });
     const work = Promise.all([
-      fanOut(record, "alert").catch((error) => console.error("fan-out failed", error)),
-      lineWantsAlert(record)
-        .then((wanted) => (wanted ? sendLineAlert(record) : null))
-        .catch((error) => console.error("LINE fan-out failed", error)),
+      fanOut(record, "alert", audience).catch((error) => console.error("fan-out failed", error)),
+      Promise.all(
+        lineDestinations(record, audience).map((destination) =>
+          sendLineAlert(record, destination).catch((error) => console.error("LINE fan-out failed", error))
+        ),
+      ),
     ]);
     if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(work);
     else await work;

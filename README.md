@@ -205,6 +205,13 @@ this repository.
   rolls to the next delivery month by itself, whereas a dated contract stops producing candles at
   expiry — at which point the scanner labels the watchlist row with the reason rather than
   letting it go quiet.
+- **Watching and notifying are separate.** Adding an instrument scans and charts it; what it is
+  allowed to do about that is a second set of choices on the row. Per instrument: mute it, pick
+  bullish / bearish / both, and pick push and/or LINE. Per account: quiet hours, a daily window in
+  your own timezone during which nothing is delivered. All of it suppresses **delivery only** —
+  the crossover is still detected, still charted, and still in the alert history afterwards.
+  Detection cannot be personal: one scan serves everybody watching an instrument, so the fan-out
+  is where each member's rules are applied.
 - **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 20;
   `watchlist_max_instruments`, default 80 distinct instruments across everyone), so they hold even
   against a hand-written request.
@@ -352,6 +359,15 @@ deduplication and synchronization contract.
    ```powershell
    npx supabase@2.116.0 functions deploy watch-scan symbol-search
    ```
+
+   Members set their own delivery rules in the PWA; nothing about them needs configuring here.
+   Two notes on the edges of that. `alert_directions` no longer gates watchlist alerts — it would
+   silently override a member who asked for exactly the direction it excludes — so it now governs
+   only gold and SET, and `watchlist_enabled` / `watchlist_dry_run` are this producer's switches.
+   And LINE remains one channel per destination: yours comes from the `LINE_USER_ID` secret, so
+   the LINE option is offered only to accounts that have a destination. To give a member their
+   own, set `notification_prefs.line_user_id` for them (a `U…` id from the LINE Messaging API);
+   there is no self-service way to obtain one yet.
 
    Controls live in `public.settings`: `watchlist_enabled` (kill switch), `watchlist_dry_run`
    (detect and chart without notifying), `watchlist_max_per_user` (20), `watchlist_max_instruments`

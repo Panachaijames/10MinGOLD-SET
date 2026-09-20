@@ -18,6 +18,7 @@ closed candle or lose a confirmed crossover.
 | `set_holidays` | Owner | SET session gate | Thai market closures; update annually from an authoritative calendar. |
 | `settings` | Owner and server jobs | Edge Functions and SQL jobs | Tickers, kill switches, dry-run flags, alert directions, session settings, watchlist caps and push TTL. |
 | `watchlist` | Each member, through the PWA | `watch-scan`, `push-fanout` | One row per member per instrument and timeframe. RLS restricts every member to their own rows; database triggers enforce `watchlist_max_per_user` and `watchlist_max_instruments`. |
+| `notification_prefs` | Each member, through the PWA | `push-fanout` | One row per member: quiet-hours window, its timezone, and a LINE destination when they have one. RLS restricts every member to their own row. |
 | `watch_state` | `watch-scan` | PWA watchlist panel, scan gate | Scanner cursor per **distinct** `(symbol,timeframe)`, not per member: one scan serves everyone watching the same instrument. Purged a week after nobody watches it. |
 
 ## What is synchronized
@@ -64,11 +65,20 @@ the tick (H4 and D1 are polled hourly, because on a session-bounded market their
 on an epoch-aligned boundary), and chunks them across invocations. A catch-up run two minutes later
 picks up only what a failed or timed-out invocation left behind, judged by `watch_state.last_polled_at`.
 
-Routing is the part that differs from every other producer. A `watchlist` alert is **not** a
-broadcast: `push-fanout` looks up who watches that `(symbol,timeframe)` and creates delivery rows
-only for their devices. LINE is the owner's single channel, so a watchlist alert reaches it only
-when the owner is one of the watchers. Alert ids are identical to those the real-time TradingView
-webhook builds for the same bar, so an instrument covered by both is notified once.
+Routing is the part that differs from every other producer, and it is where every personal
+preference is applied. A `watchlist` alert is **not** a broadcast: `push-fanout` looks up who
+watches that `(symbol,timeframe)` and then filters that list through each member's own rules —
+`watchlist.notify` (muted), `watchlist.directions` (a direction they do not trade),
+`notification_prefs` quiet hours (judged in their timezone) — before creating delivery rows.
+`watchlist.channels` then decides push, LINE, or both, with each member's LINE destination coming
+from `notification_prefs.line_user_id` and the owner's from the function's `LINE_USER_ID` secret.
+
+Detection is deliberately impersonal: one scan serves everyone watching an instrument, so the
+scanner cannot apply anybody's preferences without applying them to everybody. It therefore writes
+the alert for **both** directions regardless of `alert_directions` (which still governs gold and
+SET), and suppression happens at delivery. An alert nobody wanted pushed is still stored, charted
+and listed. Alert ids are identical to those the real-time TradingView webhook builds for the same
+bar, so an instrument covered by both is notified once.
 
 Delayed venues identify themselves: the feed reports `delay` (900 seconds for SET and TFEX), which
 the scanner applies to its own clock before deciding whether a bar has closed, and names in the

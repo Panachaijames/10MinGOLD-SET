@@ -136,6 +136,38 @@ const TH: Record<string, string> = {
   "Timeframe": "ไทม์เฟรม",
   "delayed": "ดีเลย์",
 
+  // per-instrument alert settings
+  "Alerts": "การแจ้งเตือน",
+  "Muted": "ปิดเสียง",
+  "Notify me": "แจ้งเตือนฉัน",
+  "Direction": "ทิศทาง",
+  "Directions": "ทิศทาง",
+  "Bullish": "ขาขึ้น",
+  "Bearish": "ขาลง",
+  "Send to": "ส่งไปที่",
+  "Channels": "ช่องทาง",
+  "Push": "แจ้งเตือนบนเครื่อง",
+  "Keep at least one direction, or mute the instrument.":
+    "ต้องเลือกอย่างน้อยหนึ่งทิศทาง หรือปิดเสียงหลักทรัพย์นี้",
+  "Keep at least one channel, or mute the instrument.":
+    "ต้องเลือกอย่างน้อยหนึ่งช่องทาง หรือปิดเสียงหลักทรัพย์นี้",
+  "Muting keeps the instrument scanned and charted; only the notification stops.":
+    "การปิดเสียงยังคงสแกนและแสดงกราฟตามปกติ หยุดเฉพาะการแจ้งเตือน",
+  "This account has no LINE destination yet.": "บัญชีนี้ยังไม่ได้ผูกปลายทาง LINE",
+
+  // quiet hours
+  "Quiet hours": "ช่วงเวลางดแจ้งเตือน",
+  "No notifications inside this window. Alerts still appear in the history and on the charts.":
+    "ไม่แจ้งเตือนในช่วงเวลานี้ แต่สัญญาณยังบันทึกในประวัติและแสดงบนกราฟตามปกติ",
+  "From": "ตั้งแต่",
+  "To": "ถึง",
+  "Save": "บันทึก",
+  "Saving…": "กำลังบันทึก…",
+  "Turn off": "ปิดใช้งาน",
+  "Quiet hours saved.": "บันทึกช่วงเวลางดแจ้งเตือนแล้ว",
+  "Quiet hours turned off.": "ปิดช่วงเวลางดแจ้งเตือนแล้ว",
+  "Times are in": "อ้างอิงเขตเวลา",
+
   // SET table
   "SET stocks · 15m · TradingView (15-min delayed)": "หุ้นไทย · 15 นาที · TradingView (ดีเลย์ 15 นาที)",
   "MACD by ticker": "MACD แยกตามหลักทรัพย์",
