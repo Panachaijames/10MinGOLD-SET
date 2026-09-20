@@ -372,6 +372,15 @@ deduplication and synchronization contract.
    npx supabase@2.116.0 functions deploy watch-scan symbol-search chart-candles
    ```
 
+   The nine configured SET stocks are seeded onto the owner's watchlist on M10 and M15, matching
+   the eighteen TradingView alerts already set up for them, so the panel does not open empty for
+   instruments that have been watched all along. That cannot double-notify: `tv-webhook` and
+   `watch-scan` build the same alert id for a bar and `alerts.id` is the primary key, so the
+   webhook's real-time row wins and the delayed scan is discarded. What the rows add is charts on
+   every timeframe, per-instrument mute and direction, and a late fallback if a TradingView alert
+   ever expires. The seed only touches rows that do not exist, so re-running it never undoes a
+   choice made since.
+
    Members set their own delivery rules in the PWA; nothing about them needs configuring here.
    Two notes on the edges of that. `alert_directions` no longer gates watchlist alerts — it would
    silently override a member who asked for exactly the direction it excludes — so it now governs

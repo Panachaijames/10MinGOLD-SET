@@ -12,6 +12,14 @@ import { zoneParts, zonedTimeToUtcMs } from "./timezone.ts";
 
 export const DAILY_MINUTES = 1440;
 
+/**
+ * How much extra source history to ask for when a timeframe is built by resampling.
+ *
+ * Measured against the live feed: 640 M5 bars of SET:STGT produce only 241 complete M10 buckets,
+ * while 1200 produce 489. Doubling clears the 260-bar MACD warm-up for every ticker tested.
+ */
+const GAP_HEADROOM = 2;
+
 export interface TimeframeSpec {
   minutes: number;
   /** M15, H4, D1 — what a trader calls it. */
@@ -237,7 +245,12 @@ export async function fetchInstrument(
   let bars: Bar[];
   if (spec.sourceMinutes) {
     const slots = timeframe / spec.sourceMinutes;
-    series = await fetchSeries(symbol, spec.resolution, wanted * slots + slots * 20);
+    // A resampled bucket needs every one of its source slots, and a thinly traded stock simply
+    // has no bar in a five-minute slot where nothing changed hands: SET:STGT loses roughly a
+    // quarter of its M5 slots that way, so asking for exactly `wanted * slots` yielded 241
+    // complete M10 buckets where 260 are needed for MACD. The headroom is for those gaps; a
+    // liquid symbol just discards the surplus.
+    series = await fetchSeries(symbol, spec.resolution, wanted * slots * GAP_HEADROOM + slots * 20);
     bars = resample(series.bars, timeframe, spec.sourceMinutes);
   } else {
     series = await fetchSeries(symbol, spec.resolution, wanted + 20);
