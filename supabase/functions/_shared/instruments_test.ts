@@ -2,7 +2,9 @@ import {
   barCloseMs,
   canonicalTicker,
   closedBars,
+  expirationMs,
   feedDelaySeconds,
+  hasExpired,
   isFinalBar,
   maxAgeMs,
   parseInstruments,
@@ -148,6 +150,25 @@ denoTest("maxAgeMs scales with the timeframe but never goes below a quarter of a
   assertEquals(maxAgeMs(5), 15 * 60_000);
   assertEquals(maxAgeMs(15), 30 * 60_000);
   assertEquals(maxAgeMs(1440), 2 * 24 * 60 * 60_000);
+});
+
+denoTest("expirationMs reads a futures last trading day and rejects nonsense", () => {
+  // TFEX:S50U2026 reports 20260929. The whole of that day is allowed, so a contract is never
+  // declared dead while it is still trading.
+  assertEquals(expirationMs({ expiration: 20260929 } as SymbolMeta), Date.UTC(2026, 8, 29, 23, 59, 59, 999));
+  assertEquals(expirationMs({ expiration: "20260929" } as SymbolMeta), Date.UTC(2026, 8, 29, 23, 59, 59, 999));
+  assertEquals(expirationMs(CRYPTO_META), null); // nothing to expire
+  assertEquals(expirationMs(null), null);
+  assertEquals(expirationMs({ expiration: "2026-09-29" } as SymbolMeta), null);
+  assertEquals(expirationMs({ expiration: 20261301 } as SymbolMeta), null); // month 13
+  assertEquals(expirationMs({ expiration: 20260231 } as SymbolMeta), null); // 31 February
+});
+
+denoTest("hasExpired is false right up to the end of the last trading day", () => {
+  const contract = { expiration: 20260929 } as SymbolMeta;
+  assertEquals(hasExpired(contract, Date.UTC(2026, 8, 29, 12, 0)), false);
+  assertEquals(hasExpired(contract, Date.UTC(2026, 8, 30, 0, 0)), true);
+  assertEquals(hasExpired(SET_META, Date.UTC(2030, 0, 1)), false);
 });
 
 denoTest("feedDelaySeconds reads the venue's own declared delay", () => {

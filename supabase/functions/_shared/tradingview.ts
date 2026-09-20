@@ -50,6 +50,12 @@ export interface SymbolMeta {
   listed_exchange?: string;
   currency_code?: string;
   description?: string;
+  /** Seconds this venue withholds data from an anonymous session (SET and TFEX report 900). */
+  delay?: number;
+  /** Last trading day of a dated futures contract, as YYYYMMDD. Absent for everything else. */
+  expiration?: number | string;
+  /** Futures root a dated contract belongs to ("S50"), for suggesting its continuous sibling. */
+  root?: string;
 }
 
 export interface Series {

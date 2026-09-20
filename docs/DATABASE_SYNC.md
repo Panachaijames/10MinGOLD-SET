@@ -70,9 +70,11 @@ only for their devices. LINE is the owner's single channel, so a watchlist alert
 when the owner is one of the watchers. Alert ids are identical to those the real-time TradingView
 webhook builds for the same bar, so an instrument covered by both is notified once.
 
-Delayed venues identify themselves: the feed reports `delay` (900 seconds for SET), which the
-scanner applies to its own clock before deciding whether a bar has closed, and names in the alert
-text. Daily bars on session markets close when the exchange does, read from the feed's session
+Delayed venues identify themselves: the feed reports `delay` (900 seconds for SET and TFEX), which
+the scanner applies to its own clock before deciding whether a bar has closed, and names in the
+alert text. Dated futures contracts identify themselves too, through `expiration`: once that day
+has passed the contract can never print another candle, so the scan records why on
+`watch_state.last_error` instead of leaving a watchlist entry that silently never signals. Daily bars on session markets close when the exchange does, read from the feed's session
 string, rather than 24 hours after the bar opened.
 
 ### SET and Bitcoin chart flow

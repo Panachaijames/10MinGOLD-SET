@@ -113,22 +113,7 @@ button:disabled { opacity: .5; cursor: wait; transform: none; }
 
 .section-title { display: flex; justify-content: space-between; align-items: flex-end; margin: 45px 1px 14px; }
 .section-title h2, .diagnostics h2 { font-size: 1.42rem; letter-spacing: -.03em; margin: 3px 0 0; }
-.last-sync { color: var(--muted); font: .69rem "DM Mono", monospace; }
-.card-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-.timeframe-card { min-width: 0; padding: clamp(20px, 4vw, 29px); border: 1px solid var(--line); border-radius: 20px; background: linear-gradient(145deg, rgba(17,42,36,.94), rgba(8,27,23,.82)); overflow: hidden; position: relative; }
-.timeframe-card::after { content: ""; position: absolute; right: -30px; bottom: -70px; width: 180px; height: 180px; border: 1px solid rgba(214,173,92,.08); border-radius: 50%; }
-.card-heading { display: flex; justify-content: space-between; gap: 15px; align-items: flex-start; }
-.card-heading h2 { font: 500 1.55rem "DM Mono", monospace; margin: 4px 0 0; }
-.trend-chip { font: .64rem "DM Mono", monospace; border-radius: 99px; padding: 7px 9px; white-space: nowrap; }
-.trend-chip.positive { color: var(--mint); background: rgba(113,225,193,.08); }
-.trend-chip.negative { color: var(--coral); background: rgba(255,143,123,.07); }
-.price { margin: 29px 0 24px; font: 500 clamp(2.1rem, 6vw, 3.2rem) "DM Mono", monospace; letter-spacing: -.045em; }
-.indicator-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 16px 0; }
-.indicator-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.indicator-grid span { color: var(--muted); font-size: .63rem; }
-.indicator-grid strong { font: 500 .76rem "DM Mono", monospace; overflow: hidden; text-overflow: ellipsis; }
 .mint { color: var(--mint); } .coral { color: var(--coral); }
-.card-footer { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font: .62rem "DM Mono", monospace; padding-top: 14px; }
 
 .diagnostics { margin-top: 16px; padding: 23px 27px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px 35px; }
 .diagnostics p { grid-column: 1 / -1; margin: 8px 0 0; color: var(--muted); font-size: .7rem; }
@@ -166,7 +151,6 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
   .button-row { width: 100%; justify-content: stretch; }
   .button-row button { flex: 1; }
   .share-dialog { margin: auto; }
-  .card-grid { grid-template-columns: 1fr; }
   .diagnostics { grid-template-columns: 1fr; }
   .diagnostic-metrics { margin-top: 9px; justify-content: space-between; }
   .onboarding form { flex-direction: column; }
@@ -174,8 +158,6 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 
 @media (max-width: 410px) {
   .brand-copy small { display: none; }
-  .card-footer { flex-direction: column; gap: 5px; }
-  .last-sync { display: none; }
   .alert-row { grid-template-columns: 42px 1fr; }
   .alert-delivery { grid-column: 2; text-align: left; flex-direction: row; gap: 8px; align-items: center; }
 }
@@ -183,7 +165,6 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
 }
-
 
 /* v2: multi-field sign-in and the alert linked from a notification */
 .onboarding form { display: grid; gap: 10px; }
@@ -282,6 +263,7 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .watch-result-detail { color: var(--muted); flex: 1 1 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .watch-result-exchange { color: var(--muted); font-size: .66rem; letter-spacing: .05em; text-transform: uppercase; }
 .watch-result-add { margin-left: auto; color: var(--mint); }
+.watch-row-error { display: block; margin-top: 3px; max-width: 34ch; color: var(--coral); font-size: .64rem; line-height: 1.35; white-space: normal; }
 .tag-delayed { margin-left: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(214,173,92,.16); color: var(--gold); font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; }
 button.ghost.small { padding: 4px 10px; font-size: .68rem; border-radius: 8px; }
 @media (max-width: 720px) {

@@ -1,63 +1,19 @@
 // Instrument search for the PWA's "add to watchlist" box.
 //
 // The browser cannot call TradingView's search endpoint directly (no CORS headers, and the
-// request needs a tradingview.com Origin), so this function is the proxy. It normalises what
-// comes back into the EXCHANGE:SYMBOL form the watchlist and the chart socket both use, which
-// is `prefix` or `source_id` — never the `exchange` field, a display name ("Binance") that is
-// not a valid ticker prefix.
+// request needs a tradingview.com Origin), so this function is the proxy. Turning a hit into a
+// ticker the chart socket will resolve is `_shared/search.ts`, which is where futures roots are
+// expanded into their individual contracts.
 //
 // Membership is required. Search is a call out to a third party on the project's IP, so a
 // signed-in-but-not-admitted account must not be able to drive it.
 import { callerMember, unauthorized } from "../_shared/auth.ts";
 import { corsHeaders } from "../_shared/db.ts";
-import { canonicalTicker } from "../_shared/instruments.ts";
+import { expandHits, type SearchHit } from "../_shared/search.ts";
 
 const SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/v3/";
 const MAX_RESULTS = 30;
 const REQUEST_TIMEOUT_MS = 10_000;
-
-interface SearchHit {
-  symbol?: string;
-  description?: string;
-  type?: string;
-  exchange?: string;
-  prefix?: string;
-  source_id?: string;
-  currency_code?: string;
-  country?: string;
-}
-
-interface Result {
-  ticker: string;
-  symbol: string;
-  exchange: string;
-  description: string;
-  type: string;
-  currency: string | null;
-  country: string | null;
-}
-
-/** Search hits arrive with the matched substring wrapped in <em> for highlighting. */
-function plain(value: unknown): string {
-  return typeof value === "string" ? value.replace(/<\/?em>/g, "").trim() : "";
-}
-
-export function toResult(hit: SearchHit): Result | null {
-  const symbol = plain(hit.symbol);
-  const prefix = plain(hit.prefix) || plain(hit.source_id);
-  if (!symbol || !prefix) return null;
-  const ticker = canonicalTicker(`${prefix}:${symbol}`);
-  if (!ticker) return null;
-  return {
-    ticker,
-    symbol,
-    exchange: plain(hit.exchange) || prefix,
-    description: plain(hit.description),
-    type: plain(hit.type) || "unknown",
-    currency: plain(hit.currency_code) || null,
-    country: plain(hit.country) || null,
-  };
-}
 
 Deno.serve(async (req) => {
   const headers = corsHeaders();
@@ -78,8 +34,6 @@ Deno.serve(async (req) => {
     hl: "0",
     lang: "en",
     domain: "production",
-    // TradingView returns futures contracts as nested arrays that cannot be charted by ticker
-    // alone; asking for the plain list keeps every result directly usable.
     search_type: "undefined",
   });
   if (exchange) query.set("exchange", exchange);
@@ -104,16 +58,7 @@ Deno.serve(async (req) => {
       );
     }
     const payload = (await response.json()) as { symbols?: SearchHit[] };
-    const seen = new Set<string>();
-    const results: Result[] = [];
-    for (const hit of payload.symbols ?? []) {
-      const result = toResult(hit);
-      if (!result || seen.has(result.ticker)) continue;
-      seen.add(result.ticker);
-      results.push(result);
-      if (results.length >= MAX_RESULTS) break;
-    }
-    return Response.json({ results }, { headers });
+    return Response.json({ results: expandHits(payload.symbols ?? [], MAX_RESULTS) }, { headers });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const timedOut = message.includes("abort");

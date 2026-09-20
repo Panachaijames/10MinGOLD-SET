@@ -197,6 +197,14 @@ this repository.
   shared: ten people watching PTT M15 cost one read, not ten.
 - **Charts come with it.** An added instrument appears in the chart pane dropdown with the same
   MACD, RSI and alert arrows as gold.
+- **Futures are listed by contract.** TradingView returns a futures family as a single root with
+  its contracts nested inside, and the root itself is not a chartable symbol: `TFEX:S50` is
+  refused as an invalid symbol, while `TFEX:S501!`, `TFEX:S50U2026` and `TFEX:S50Z2026` all
+  resolve. The search therefore expands the root and hides it, so searching `S50` offers every
+  contract and searching `S50Z2026` finds that one. Prefer the continuous contract (`S501!`): it
+  rolls to the next delivery month by itself, whereas a dated contract stops producing candles at
+  expiry — at which point the scanner labels the watchlist row with the reason rather than
+  letting it go quiet.
 - **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 20;
   `watchlist_max_instruments`, default 80 distinct instruments across everyone), so they hold even
   against a hand-written request.

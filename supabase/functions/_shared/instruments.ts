@@ -55,8 +55,37 @@ export function canonicalTicker(value: unknown): string | null {
 
 /** Seconds the venue's data is held back from this anonymous session (SET returns 900). */
 export function feedDelaySeconds(meta: SymbolMeta | null): number {
-  const delay = (meta as { delay?: unknown } | null)?.delay;
+  const delay = meta?.delay;
   return typeof delay === "number" && Number.isFinite(delay) && delay > 0 ? Math.min(delay, 3600) : 0;
+}
+
+/**
+ * When a dated futures contract stops trading, or null for anything that does not expire.
+ *
+ * The feed gives the last trading day as YYYYMMDD with no time and no zone. Rather than guess
+ * the venue's closing minute, the whole of that day is allowed: expiry is only used to explain
+ * why an instrument has gone quiet, and being a few hours late to say so is much better than
+ * declaring a contract dead while it is still trading.
+ */
+export function expirationMs(meta: SymbolMeta | null): number | null {
+  const raw = meta?.expiration;
+  const digits = typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : "";
+  if (!/^\d{8}$/.test(digits)) return null;
+  const year = Number(digits.slice(0, 4));
+  const month = Number(digits.slice(4, 6));
+  const day = Number(digits.slice(6, 8));
+  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const endOfDay = Date.UTC(year, month - 1, day, 23, 59, 59, 999);
+  // Date.UTC rolls an impossible date (31 February) into the next month; reject rather than use it.
+  const check = new Date(endOfDay);
+  if (check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+  return endOfDay;
+}
+
+/** A contract whose last trading day has passed: it will never publish another candle. */
+export function hasExpired(meta: SymbolMeta | null, nowMs = Date.now()): boolean {
+  const expires = expirationMs(meta);
+  return expires !== null && nowMs > expires;
 }
 
 // ------------------------------------------------------------------ session hours

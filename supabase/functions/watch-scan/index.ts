@@ -17,6 +17,7 @@ import { bangkokClock, crossDirection, eventId, macdSeries, type Direction } fro
 import {
   barCloseMs,
   fetchInstrument,
+  hasExpired,
   maxAgeMs,
   parseInstruments,
   timeframeLabel,
@@ -151,6 +152,23 @@ async function scanOne(
     }
 
     entry.delay_seconds = series.delaySeconds;
+
+    // A dated futures contract (TFEX:S50U2026) simply stops producing candles when it expires.
+    // Left unsaid, that looks exactly like a working watchlist entry that never signals, so it
+    // is reported as the reason rather than allowed to go quiet.
+    if (hasExpired(series.meta)) {
+      const root = series.meta?.root;
+      entry.result = "expired";
+      await client.from("watch_state").upsert({
+        symbol,
+        timeframe,
+        last_polled_at: new Date().toISOString(),
+        last_error: `Contract expired on ${String(series.meta?.expiration ?? "its last trading day")}` +
+          `${root ? `. Watch ${symbol.split(":")[0]}:${root}1! (continuous) or a later month instead` : ""}`,
+      }, { onConflict: "symbol,timeframe" });
+      return entry;
+    }
+
     const bars = series.bars;
     if (bars.length < MIN_CLOSED_BARS) {
       // Not an error the member can act on, but not a scan either: say so and leave the cursor

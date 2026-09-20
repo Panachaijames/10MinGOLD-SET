@@ -165,6 +165,8 @@ export interface SymbolHit {
   type: string;
   currency: string | null;
   country: string | null;
+  /** A rolling futures contract, which never expires. Absent for everything that is not futures. */
+  continuous?: boolean;
 }
 
 export interface WatchlistEntry {

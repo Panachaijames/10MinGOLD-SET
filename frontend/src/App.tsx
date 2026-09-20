@@ -7,7 +7,6 @@ import {
   SetTickerState,
   StatusResponse,
   SymbolHit,
-  TimeframeState,
   WATCH_TIMEFRAMES,
   WatchlistEntry,
   shortSymbol,
@@ -126,33 +125,6 @@ function formatAgo(value: string | null | undefined, now: number): string {
 
 function StatusDot({ live }: { live: boolean }) {
   return <span className={`status-dot ${live ? "live" : "offline"}`} aria-hidden="true" />;
-}
-
-function TimeframeCard({ value }: { value: TimeframeState }) {
-  const positive = value.histogram > 0;
-  return (
-    <article className="timeframe-card">
-      <div className="card-heading">
-        <div>
-          <span className="eyebrow">{t("Confirmed candle")}</span>
-          <h2>M{value.timeframe_minutes}</h2>
-        </div>
-        <span className={`trend-chip ${positive ? "positive" : "negative"}`}>
-          {positive ? "MACD above" : "MACD below"}
-        </span>
-      </div>
-      <div className="price">{value.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-      <div className="indicator-grid">
-        <div><span>MACD</span><strong>{value.macd.toFixed(4)}</strong></div>
-        <div><span>{t("Signal")}</span><strong>{value.signal.toFixed(4)}</strong></div>
-        <div><span>{t("Histogram")}</span><strong className={positive ? "mint" : "coral"}>{value.histogram.toFixed(4)}</strong></div>
-      </div>
-      <div className="card-footer">
-        <span>Closed {formatTime(value.bar_close, true)}{value.provisional ? " · by clock" : ""}</span>
-        <span>{value.feed_fresh ? `Detected +${formatLatency(value.detection_delay_ms)}` : "Market paused"}</span>
-      </div>
-    </article>
-  );
 }
 
 function BellIcon() {
@@ -471,15 +443,16 @@ function WatchlistPanel({ entries, error, onChanged, onSelect }: WatchlistPanelP
               <td>
                 {shortSymbol(entry.symbol)}
                 {isDelayedSymbol(entry.symbol) && <span className="tag-delayed">{t("delayed")}</span>}
+                {/* The scanner's own words rather than a generic badge: "contract expired" and
+                    "symbol not found" need completely different things done about them. */}
+                {entry.last_error && (
+                  <span className="watch-row-error" title={entry.last_error}>{entry.last_error}</span>
+                )}
               </td>
               <td>{timeframeLabel(entry.timeframe_minutes)}</td>
               <td>{entry.macd?.toFixed(4) ?? "—"}</td>
               <td className={(entry.histogram ?? 0) >= 0 ? "mint" : "coral"}>{entry.histogram?.toFixed(4) ?? "—"}</td>
-              <td>
-                {entry.last_error
-                  ? <span className="coral">{t("feed error")}</span>
-                  : formatTime(entry.last_bar_time, false)}
-              </td>
+              <td>{formatTime(entry.last_bar_time, false)}</td>
               <td>
                 <button
                   className="ghost small"
@@ -1324,16 +1297,6 @@ export default function App() {
               </p>
             </section>
           )}
-
-          <div className="section-title">
-            <div><span className="eyebrow">{t("Live indicators")}</span><h2>{t("Closed candles")}</h2></div>
-            <span className="last-sync">Updated {formatTime(status?.watcher.last_poll_at, true)}</span>
-          </div>
-          <section className="card-grid">
-            {cards.length ? cards.map((card) => <TimeframeCard key={card.timeframe_minutes} value={card} />) : (
-              <div className="empty panel">{t("Waiting for the first MT5 candle snapshot…")}</div>
-            )}
-          </section>
 
           <div className="section-title">
             <div><span className="eyebrow">{t("Chart")}</span><h2>MACD 12 / 26 / 9 · RSI 14</h2></div>

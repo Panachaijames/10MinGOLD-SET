@@ -109,10 +109,6 @@ const TH: Record<string, string> = {
   "Push fan-out": "การกระจายแจ้งเตือน",
 
   // indicators and charts
-  "Live indicators": "ตัวชี้วัดแบบเรียลไทม์",
-  "Closed candles": "แท่งเทียนที่ปิดแล้ว",
-  "Confirmed candle": "แท่งเทียนที่ยืนยันแล้ว",
-  "Waiting for the first MT5 candle snapshot…": "กำลังรอข้อมูลแท่งเทียนชุดแรกจาก MT5…",
   "Chart": "กราฟ",
   "Chart layout": "รูปแบบการจัดกราฟ",
   "Indicators": "ตัวชี้วัด",
@@ -139,7 +135,6 @@ const TH: Record<string, string> = {
   "Instrument": "หลักทรัพย์",
   "Timeframe": "ไทม์เฟรม",
   "delayed": "ดีเลย์",
-  "feed error": "ข้อมูลผิดพลาด",
 
   // SET table
   "SET stocks · 15m · TradingView (15-min delayed)": "หุ้นไทย · 15 นาที · TradingView (ดีเลย์ 15 นาที)",
