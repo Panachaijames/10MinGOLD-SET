@@ -249,6 +249,7 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .watch-search { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .watch-search input { flex: 1 1 240px; min-width: 0; }
 .watch-search select { flex: 0 0 auto; }
+.watch-add-frames { margin-bottom: 12px; }
 .watch-hint { margin: 0 0 10px; color: var(--muted); font: .72rem "DM Mono", monospace; }
 .watch-results { list-style: none; margin: 0 0 14px; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; max-height: 280px; overflow-y: auto; }
 .watch-results li + li { border-top: 1px solid var(--line); }
@@ -263,6 +264,13 @@ footer button { color: var(--muted); background: none; font-size: .65rem; paddin
 .watch-result-detail { color: var(--muted); flex: 1 1 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .watch-result-exchange { color: var(--muted); font-size: .66rem; letter-spacing: .05em; text-transform: uppercase; }
 .watch-result-add { margin-left: auto; color: var(--mint); }
+.watch-row-label { display: block; margin-top: 3px; max-width: 34ch; color: var(--muted); font-size: .64rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-frames { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.frame-tag { padding: 2px 7px; border-radius: 6px; background: rgba(113,225,193,.1); color: var(--mint); font-size: .64rem; letter-spacing: .03em; }
+.watch-frame-state { width: 100%; margin-top: 12px; border-collapse: collapse; font: .68rem "DM Mono", monospace; color: var(--muted); }
+.watch-frame-state td { padding: 5px 10px 5px 0; border: 0; white-space: nowrap; }
+.watch-frame-state td:last-child { white-space: normal; width: 100%; }
+.linklike { padding: 0; background: transparent; color: var(--mint); font: 500 .68rem "DM Mono", monospace; text-decoration: underline; text-underline-offset: 3px; }
 .alert-summary { white-space: nowrap; font: .68rem "DM Mono", monospace; }
 .watch-settings > td { background: rgba(113,225,193,.035); padding: 14px 12px; }
 .watch-settings-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
@@ -291,7 +299,9 @@ button.ghost.small { padding: 4px 10px; font-size: .68rem; border-radius: 8px; }
   .quiet-controls { justify-content: space-between; }
   .quiet-controls input { width: 100%; }
   .quiet-controls label { flex: 1 1 8rem; }
-  .watchlist-panel .set-table th:nth-child(3), .watchlist-panel .set-table td:nth-child(3) { display: none; }
+  /* Four short columns fit; the alert summary is the point of the table, so nothing is hidden. */
+  .watch-frame-state td { white-space: normal; }
+  .watch-table .alert-summary { white-space: normal; }
 }
 
 .price-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; }

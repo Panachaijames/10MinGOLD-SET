@@ -205,16 +205,23 @@ this repository.
   rolls to the next delivery month by itself, whereas a dated contract stops producing candles at
   expiry — at which point the scanner labels the watchlist row with the reason rather than
   letting it go quiet.
-- **Watching and notifying are separate.** Adding an instrument scans and charts it; what it is
-  allowed to do about that is a second set of choices on the row. Per instrument: mute it, pick
-  bullish / bearish / both, and pick push and/or LINE. Per account: quiet hours, a daily window in
-  your own timezone during which nothing is delivered. All of it suppresses **delivery only** —
-  the crossover is still detected, still charted, and still in the alert history afterwards.
-  Detection cannot be personal: one scan serves everybody watching an instrument, so the fan-out
-  is where each member's rules are applied.
-- **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 20;
-  `watchlist_max_instruments`, default 80 distinct instruments across everyone), so they hold even
-  against a hand-written request.
+- **The stock, its timeframes, and its alerts are three separate settings.** You add a stock
+  once. Which candles alert you is a row of timeframe chips on it — tick M10, M15 and H1 and it
+  watches all three. What those alerts do is a third set of choices: mute, bullish / bearish /
+  both, and push and/or LINE. Per account there is also a quiet-hours window in your own
+  timezone.
+- **All of that suppresses delivery only.** The crossover is still detected, still charted, and
+  still in the alert history afterwards. Detection cannot be personal — one scan serves everybody
+  watching an instrument — so the fan-out is where each member's rules are applied.
+- **Charts pick instrument and timeframe separately too.** Each pane has two dropdowns rather
+  than one combined list, so comparing a symbol across timeframes (or two symbols on the same
+  one) is a single change. Switching symbol keeps the timeframe when the new instrument has it.
+- **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 40;
+  `watchlist_max_instruments`, default 80 across everyone), so they hold even against a
+  hand-written request. Both count **symbol-and-timeframe pairs**, because that is the load the
+  scanner actually carries: one stock on three timeframes is three of them. A project created
+  before the caps were re-described keeps its own value; raise it with
+  `update public.settings set value = '60'::jsonb where key = 'watchlist_max_per_user';`
 
 The honest limitation is data, not code: **SET stocks on the anonymous feed are 15 minutes
 delayed**, so a self-service SET alert arrives about 15 minutes after the candle closes. Crypto,

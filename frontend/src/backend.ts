@@ -78,8 +78,16 @@ export interface Backend {
   searchSymbols?(text: string): Promise<SymbolHit[]>;
   addWatch?(input: { symbol: string; timeframe: number; label?: string | null }): Promise<void>;
   removeWatch?(id: string): Promise<void>;
-  /** Change one instrument's delivery settings without touching whether it is scanned. */
-  updateWatch?(id: string, patch: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>): Promise<void>;
+  /**
+   * Change an instrument's delivery settings. They belong to the instrument rather than to each
+   * of its timeframes, so every row for that symbol moves together.
+   */
+  updateWatchSymbol?(
+    symbol: string,
+    patch: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>
+  ): Promise<void>;
+  /** Stop watching a symbol on every timeframe at once. */
+  removeWatchSymbol?(symbol: string): Promise<void>;
   notificationPrefs?(): Promise<NotificationPrefs>;
   saveNotificationPrefs?(prefs: Pick<NotificationPrefs, "quiet_from" | "quiet_to" | "time_zone">): Promise<void>;
   /** Sign in as a guest holding one of the owner's passcodes. */
@@ -692,11 +700,18 @@ class SupabaseBackend implements Backend {
     if (error) throw new Error(error.message);
   }
 
-  async updateWatch(
-    id: string,
+  // RLS scopes both of these to the signed-in member, so matching on the symbol alone cannot
+  // reach anybody else's rows.
+  async updateWatchSymbol(
+    symbol: string,
     patch: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>
   ): Promise<void> {
-    const { error } = await this.client.from("watchlist").update(patch).eq("id", id);
+    const { error } = await this.client.from("watchlist").update(patch).eq("symbol", symbol);
+    if (error) throw new Error(error.message);
+  }
+
+  async removeWatchSymbol(symbol: string): Promise<void> {
+    const { error } = await this.client.from("watchlist").delete().eq("symbol", symbol);
     if (error) throw new Error(error.message);
   }
 

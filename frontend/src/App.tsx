@@ -1,8 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
+  AlertChannel,
   AlertRecord,
   CandleSeries,
+  Direction,
   PublicConfig,
   NotificationPrefs,
   SetTickerState,
@@ -68,6 +70,39 @@ function chartInstrument(paneKey: string, goldSymbol: string): ChartInstrument |
 
 function watchPaneKey(symbol: string, timeframe: number): string {
   return `watch:${symbol}:${timeframe}`;
+}
+
+/**
+ * A chart pane is chosen as two independent things — which instrument, and which timeframe —
+ * rather than as one combined entry. The pane key stays the single string the saved layout has
+ * always used; these two functions are what take it apart and put it back together.
+ */
+export interface PaneSymbol {
+  /** Identifies the instrument alone: "gold", "btc", "set:SET:PTT", "watch:BINANCE:BTCUSDT". */
+  key: string;
+  label: string;
+  timeframes: number[];
+}
+
+function paneSymbolKey(paneKey: string): string {
+  if (paneKey.startsWith("gold:")) return "gold";
+  if (paneKey.startsWith("btc:")) return "btc";
+  if (paneKey.startsWith("set:")) return paneKey;
+  if (paneKey.startsWith("watch:")) {
+    const rest = paneKey.slice(6);
+    const cut = rest.lastIndexOf(":");
+    return cut > 0 ? `watch:${rest.slice(0, cut)}` : paneKey;
+  }
+  return paneKey;
+}
+
+function composePaneKey(symbolKey: string, timeframe: number): string {
+  if (symbolKey === "gold") return `gold:${timeframe}`;
+  if (symbolKey === "btc") return `btc:${timeframe}`;
+  // The configured SET tickers exist only as delayed M15, so their key carries no timeframe.
+  if (symbolKey.startsWith("set:")) return symbolKey;
+  if (symbolKey.startsWith("watch:")) return `${symbolKey}:${timeframe}`;
+  return symbolKey;
 }
 
 function chartInstrumentLabel(paneKey: string, goldSymbol: string): string {
@@ -381,13 +416,53 @@ interface WatchlistPanelProps {
   onSelect: (symbol: string, timeframe: number) => void;
 }
 
-/** What a row's delivery settings add up to, in the width of a table cell. */
-function alertSummary(entry: WatchlistEntry): string {
-  if (!entry.notify) return t("Muted");
-  const direction = entry.directions.length === 2
+/**
+ * One instrument, with the timeframes it is watched on.
+ *
+ * The database stores a row per symbol and timeframe, because that is the granularity the scanner
+ * and the alert ids work at. A person does not think that way: they add a stock, then decide
+ * which candles should alert them. Grouping here is what makes those two separate settings.
+ */
+interface WatchGroup {
+  symbol: string;
+  label: string | null;
+  /** One entry per watched timeframe, shortest first. */
+  entries: WatchlistEntry[];
+  timeframes: number[];
+  notify: boolean;
+  directions: Direction[];
+  channels: AlertChannel[];
+}
+
+function groupWatchlist(entries: WatchlistEntry[]): WatchGroup[] {
+  const groups = new Map<string, WatchlistEntry[]>();
+  for (const entry of entries) {
+    groups.set(entry.symbol, [...(groups.get(entry.symbol) ?? []), entry]);
+  }
+  return [...groups.entries()].map(([symbol, rows]) => {
+    const sorted = [...rows].sort((a, b) => a.timeframe_minutes - b.timeframe_minutes);
+    // Delivery settings are written to every row of a symbol at once, so the first row speaks
+    // for all of them; a row inserted before the columns existed reads as the default.
+    const first = sorted[0];
+    return {
+      symbol,
+      label: sorted.find((row) => row.label)?.label ?? null,
+      entries: sorted,
+      timeframes: sorted.map((row) => row.timeframe_minutes),
+      notify: first.notify,
+      directions: first.directions,
+      channels: first.channels
+    };
+  });
+}
+
+/** What a group's delivery settings add up to, in the width of a table cell. */
+function alertSummary(group: WatchGroup): string {
+  if (!group.notify) return t("Muted");
+  const direction = group.directions.length === 2
     ? "▲▼"
-    : entry.directions[0] === "bullish" ? "▲" : "▼";
-  const channels = entry.channels.map((channel) => (channel === "push" ? t("Push") : "LINE")).join(" + ");
+    : group.directions[0] === "bullish" ? "▲" : "▼";
+  const channels = group.channels.map((channel) => (channel === "push" ? t("Push") : "LINE")).join(" + ");
   return `${direction} · ${channels}`;
 }
 
@@ -401,7 +476,7 @@ function alertSummary(entry: WatchlistEntry): string {
 function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: WatchlistPanelProps) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SymbolHit[]>([]);
-  const [timeframe, setTimeframe] = useState(15);
+  const [addFrames, setAddFrames] = useState<number[]>([15]);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
@@ -439,18 +514,29 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
   }, [query]);
 
   const add = async (hit: SymbolHit) => {
-    if (!backend.addWatch) return;
+    if (!backend.addWatch || !addFrames.length) return;
     setBusy(hit.ticker);
     setMessage("");
+    const chosen = [...addFrames].sort((a, b) => a - b);
+    const added: number[] = [];
     try {
-      await backend.addWatch({ symbol: hit.ticker, timeframe, label: hit.description || hit.symbol });
+      // One row per timeframe, because that is what the scanner and the alert ids work at. The
+      // partial result is reported rather than discarded: a cap reached halfway through should
+      // not look like nothing happened.
+      for (const frame of chosen) {
+        await backend.addWatch({ symbol: hit.ticker, timeframe: frame, label: hit.description || hit.symbol });
+        added.push(frame);
+      }
       setQuery("");
       setHits([]);
-      setMessage(`${hit.ticker} ${timeframeLabel(timeframe)} ${t("added. The next scan covers it.")}`);
-      onChanged();
+      setMessage(
+        `${shortSymbol(hit.ticker)} ${added.map(timeframeLabel).join(", ")} ${t("added. The next scan covers it.")}`
+      );
     } catch (addError) {
-      setMessage(addError instanceof Error ? addError.message : String(addError));
+      const detail = addError instanceof Error ? addError.message : String(addError);
+      setMessage(added.length ? `${added.map(timeframeLabel).join(", ")} added. ${detail}` : detail);
     } finally {
+      onChanged();
       setBusy("");
     }
   };
@@ -460,17 +546,49 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
    * independent field, and a half-applied set of alert rules is worse than none.
    */
   const patch = async (
-    entry: WatchlistEntry,
+    group: WatchGroup,
     changes: Partial<Pick<WatchlistEntry, "notify" | "directions" | "channels">>
   ) => {
-    if (!backend.updateWatch) return;
-    setBusy(entry.id);
+    if (!backend.updateWatchSymbol) return;
+    setBusy(group.symbol);
     setMessage("");
     try {
-      await backend.updateWatch(entry.id, changes);
+      await backend.updateWatchSymbol(group.symbol, changes);
       onChanged();
     } catch (patchError) {
       setMessage(patchError instanceof Error ? patchError.message : String(patchError));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  /**
+   * Watching a timeframe is adding a row; not watching it is deleting one. Keeping that as the
+   * storage shape means the scanner, the alert ids and the charts all stay exactly as they were.
+   */
+  const toggleTimeframe = async (group: WatchGroup, timeframe: number) => {
+    const existing = group.entries.find((entry) => entry.timeframe_minutes === timeframe);
+    if (existing && group.timeframes.length === 1) {
+      setMessage(t("Keep at least one timeframe, or remove the instrument."));
+      return;
+    }
+    setBusy(group.symbol);
+    setMessage("");
+    try {
+      if (existing) {
+        await backend.removeWatch?.(existing.id);
+      } else {
+        await backend.addWatch?.({ symbol: group.symbol, timeframe, label: group.label });
+        // A new row starts at the database defaults, so bring it in line with the rest.
+        await backend.updateWatchSymbol?.(group.symbol, {
+          notify: group.notify,
+          directions: group.directions,
+          channels: group.channels
+        });
+      }
+      onChanged();
+    } catch (toggleError) {
+      setMessage(toggleError instanceof Error ? toggleError.message : String(toggleError));
     } finally {
       setBusy("");
     }
@@ -482,11 +600,13 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
     return next.length ? next : null;
   };
 
-  const remove = async (entry: WatchlistEntry) => {
-    if (!backend.removeWatch) return;
-    setBusy(entry.id);
+  const groups = useMemo(() => groupWatchlist(entries), [entries]);
+
+  const remove = async (group: WatchGroup) => {
+    if (!backend.removeWatchSymbol) return;
+    setBusy(group.symbol);
     try {
-      await backend.removeWatch(entry.id);
+      await backend.removeWatchSymbol(group.symbol);
       setMessage("");
       onChanged();
     } catch (removeError) {
@@ -507,15 +627,33 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
           aria-label={t("Search instruments")}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <select
-          value={timeframe}
-          aria-label={t("Timeframe for the instrument you add")}
-          onChange={(event) => setTimeframe(Number(event.target.value))}
-        >
-          {WATCH_TIMEFRAMES.map((frame) => (
-            <option key={frame.minutes} value={frame.minutes}>{frame.label}</option>
-          ))}
-        </select>
+      </div>
+      <div className="watch-option watch-add-frames" role="group" aria-label={t("Timeframe for the instrument you add")}>
+        <span className="watch-option-label">{t("Alert me on")}</span>
+        {WATCH_TIMEFRAMES.map((frame) => {
+          const on = addFrames.includes(frame.minutes);
+          return (
+            <button
+              key={frame.minutes}
+              type="button"
+              className={on ? "chip on" : "chip"}
+              aria-pressed={on}
+              onClick={() => {
+                const next = toggleIn(addFrames, frame.minutes);
+                // Computed outside the updater: a state updater has to stay pure, and React
+                // invokes it twice in development.
+                if (!next) {
+                  setMessage(t("Choose at least one timeframe."));
+                  return;
+                }
+                setMessage("");
+                setAddFrames(next);
+              }}
+            >
+              {frame.label}
+            </button>
+          );
+        })}
       </div>
       {searching && <p className="watch-hint">{t("Searching…")}</p>}
       {message && <p className="watch-hint">{message}</p>}
@@ -527,79 +665,93 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
                 <span className="watch-result-symbol">{hit.symbol}</span>
                 <span className="watch-result-detail">{hit.description || hit.type}</span>
                 <span className="watch-result-exchange">{hit.exchange}</span>
-                <span className="watch-result-add">{busy === hit.ticker ? "…" : `+ ${timeframeLabel(timeframe)}`}</span>
+                <span className="watch-result-add">
+                  {busy === hit.ticker
+                    ? "…"
+                    : "+ " + [...addFrames].sort((a, b) => a - b).map(timeframeLabel).join(" ")}
+                </span>
               </button>
             </li>
           ))}
         </ul>
       )}
 
-      <table className="set-table">
+      <table className="set-table watch-table">
         <thead>
           <tr>
-            <th>{t("Instrument")}</th><th>{t("Timeframe")}</th><th>MACD</th><th>{t("Hist")}</th>
-            <th>{t("Last closed bar")}</th><th>{t("Alerts")}</th><th />
+            <th>{t("Instrument")}</th><th>{t("Timeframes")}</th><th>{t("Alerts")}</th><th />
           </tr>
         </thead>
         <tbody>
-          {entries.length === 0 ? (
+          {groups.length === 0 ? (
             <tr>
-              <td className="empty-cell" colSpan={7}>
+              <td className="empty-cell" colSpan={4}>
                 {t("Nothing on your list yet. Search above to add an instrument.")}
               </td>
             </tr>
-          ) : entries.flatMap((entry) => [
+          ) : groups.flatMap((group) => [
             <tr
-              key={entry.id}
+              key={group.symbol}
               className="selectable"
-              onClick={() => onSelect(entry.symbol, entry.timeframe_minutes)}
+              onClick={() => setEditing((current) => (current === group.symbol ? null : group.symbol))}
             >
               <td>
-                {shortSymbol(entry.symbol)}
-                {isDelayedSymbol(entry.symbol) && <span className="tag-delayed">{t("delayed")}</span>}
-                {/* The scanner's own words rather than a generic badge: "contract expired" and
-                    "symbol not found" need completely different things done about them. */}
-                {entry.last_error && (
-                  <span className="watch-row-error" title={entry.last_error}>{entry.last_error}</span>
-                )}
+                {shortSymbol(group.symbol)}
+                {isDelayedSymbol(group.symbol) && <span className="tag-delayed">{t("delayed")}</span>}
+                {group.label && <span className="watch-row-label">{group.label}</span>}
               </td>
-              <td>{timeframeLabel(entry.timeframe_minutes)}</td>
-              <td>{entry.macd?.toFixed(4) ?? "—"}</td>
-              <td className={(entry.histogram ?? 0) >= 0 ? "mint" : "coral"}>{entry.histogram?.toFixed(4) ?? "—"}</td>
-              <td>{formatTime(entry.last_bar_time, false)}</td>
               <td>
-                <button
-                  className={entry.notify ? "chip on alert-summary" : "chip alert-summary"}
-                  aria-expanded={editing === entry.id}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setEditing((current) => (current === entry.id ? null : entry.id));
-                  }}
-                >
-                  {alertSummary(entry)}
-                </button>
+                <span className="watch-frames">
+                  {group.timeframes.map((frame) => (
+                    <span key={frame} className="frame-tag">{timeframeLabel(frame)}</span>
+                  ))}
+                </span>
+              </td>
+              <td>
+                <span className={group.notify ? "chip on alert-summary" : "chip alert-summary"}>
+                  {alertSummary(group)}
+                </span>
               </td>
               <td>
                 <button
                   className="ghost small"
-                  disabled={busy === entry.id}
-                  onClick={(event) => { event.stopPropagation(); void remove(entry); }}
-                  aria-label={`${t("Remove")} ${entry.symbol} ${timeframeLabel(entry.timeframe_minutes)}`}
+                  disabled={busy === group.symbol}
+                  onClick={(event) => { event.stopPropagation(); void remove(group); }}
+                  aria-label={t("Remove") + " " + group.symbol}
                 >
-                  {busy === entry.id ? "…" : t("Remove")}
+                  {busy === group.symbol ? "…" : t("Remove")}
                 </button>
               </td>
             </tr>,
-            editing === entry.id ? (
-              <tr key={`${entry.id}:settings`} className="watch-settings">
-                <td colSpan={7}>
+            editing === group.symbol ? (
+              <tr key={group.symbol + ":settings"} className="watch-settings">
+                <td colSpan={4}>
                   <div className="watch-settings-grid">
+                    <div className="watch-option" role="group" aria-label={t("Timeframes")}>
+                      <span className="watch-option-label">{t("Alert me on")}</span>
+                      {WATCH_TIMEFRAMES.map((frame) => {
+                        const on = group.timeframes.includes(frame.minutes);
+                        return (
+                          <button
+                            key={frame.minutes}
+                            type="button"
+                            className={on ? "chip on" : "chip"}
+                            aria-pressed={on}
+                            disabled={busy === group.symbol}
+                            onClick={() => void toggleTimeframe(group, frame.minutes)}
+                          >
+                            {frame.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
                     <label className="watch-toggle">
                       <input
                         type="checkbox"
-                        checked={entry.notify}
-                        disabled={busy === entry.id}
-                        onChange={(event) => void patch(entry, { notify: event.target.checked })}
+                        checked={group.notify}
+                        disabled={busy === group.symbol}
+                        onChange={(event) => void patch(group, { notify: event.target.checked })}
                       />
                       <span>{t("Notify me")}</span>
                     </label>
@@ -610,18 +762,18 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
                         <button
                           key={direction}
                           type="button"
-                          className={entry.directions.includes(direction) ? "chip on" : "chip"}
-                          aria-pressed={entry.directions.includes(direction)}
-                          disabled={!entry.notify || busy === entry.id}
+                          className={group.directions.includes(direction) ? "chip on" : "chip"}
+                          aria-pressed={group.directions.includes(direction)}
+                          disabled={!group.notify || busy === group.symbol}
                           onClick={() => {
-                            const next = toggleIn(entry.directions, direction);
+                            const next = toggleIn(group.directions, direction);
                             // Turning off the last direction would mean "notify me about
                             // nothing", which is what the mute is for.
                             if (!next) setMessage(t("Keep at least one direction, or mute the instrument."));
-                            else void patch(entry, { directions: next });
+                            else void patch(group, { directions: next });
                           }}
                         >
-                          {direction === "bullish" ? `▲ ${t("Bullish")}` : `▼ ${t("Bearish")}`}
+                          {direction === "bullish" ? "▲ " + t("Bullish") : "▼ " + t("Bearish")}
                         </button>
                       ))}
                     </div>
@@ -634,14 +786,14 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
                           <button
                             key={channel}
                             type="button"
-                            className={entry.channels.includes(channel) ? "chip on" : "chip"}
-                            aria-pressed={entry.channels.includes(channel)}
-                            disabled={!entry.notify || busy === entry.id || unavailable}
+                            className={group.channels.includes(channel) ? "chip on" : "chip"}
+                            aria-pressed={group.channels.includes(channel)}
+                            disabled={!group.notify || busy === group.symbol || unavailable}
                             title={unavailable ? t("This account has no LINE destination yet.") : undefined}
                             onClick={() => {
-                              const next = toggleIn(entry.channels, channel);
+                              const next = toggleIn(group.channels, channel);
                               if (!next) setMessage(t("Keep at least one channel, or mute the instrument."));
-                              else void patch(entry, { channels: next });
+                              else void patch(group, { channels: next });
                             }}
                           >
                             {channel === "push" ? t("Push") : "LINE"}
@@ -650,6 +802,33 @@ function WatchlistPanel({ entries, error, lineAvailable, onChanged, onSelect }: 
                       })}
                     </div>
                   </div>
+
+                  <table className="watch-frame-state">
+                    <tbody>
+                      {group.entries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>
+                            <button
+                              className="linklike"
+                              onClick={() => onSelect(entry.symbol, entry.timeframe_minutes)}
+                            >
+                              {timeframeLabel(entry.timeframe_minutes)}
+                            </button>
+                          </td>
+                          <td>MACD {entry.macd?.toFixed(4) ?? "—"}</td>
+                          <td className={(entry.histogram ?? 0) >= 0 ? "mint" : "coral"}>
+                            {t("Hist")} {entry.histogram?.toFixed(4) ?? "—"}
+                          </td>
+                          <td>{formatTime(entry.last_bar_time, false)}</td>
+                          <td>
+                            {entry.last_error && (
+                              <span className="watch-row-error" title={entry.last_error}>{entry.last_error}</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                   <p className="watch-hint">
                     {t("Muting keeps the instrument scanned and charted; only the notification stops.")}
                   </p>
@@ -1168,35 +1347,53 @@ export default function App() {
     [status]
   );
 
-  const paneOptions = useMemo(() => {
+  /**
+   * The instruments a pane can show, each with the timeframes that instrument actually has.
+   * Splitting the old combined dropdown in two turns an N x M list into two short ones, and lets
+   * somebody compare one symbol across timeframes without hunting through combinations.
+   */
+  const paneSymbols = useMemo<PaneSymbol[]>(() => {
     const setSymbols = [...new Set(setTickers.map((row) => row.symbol))];
     // Gold's timeframes come from the watcher itself (TIMEFRAMES in .env), so widening them on
     // the laptop puts them in this dropdown without another change here.
     const goldFrames = (config?.timeframes?.length ? config.timeframes : GOLD_TIMEFRAMES)
       .filter((frame) => SUPPORTED_TIMEFRAMES.has(frame))
       .sort((a, b) => a - b);
+    const watched = new Map<string, number[]>();
+    for (const entry of watchlist) {
+      watched.set(entry.symbol, [...(watched.get(entry.symbol) ?? []), entry.timeframe_minutes]);
+    }
     return [
-      ...goldFrames.map((tf) => ({ value: `gold:${tf}`, label: `${goldSymbol} · ${timeframeLabel(tf)}` })),
+      { key: "gold", label: goldSymbol, timeframes: goldFrames },
       ...(backend.kind === "supabase"
-        ? [10, 15].map((tf) => ({ value: `btc:${tf}`, label: `BTCUSDT · ${timeframeLabel(tf)}` }))
+        ? [{ key: "btc", label: "BTCUSDT", timeframes: [10, 15] }]
         : []),
-      ...setSymbols.map((symbol) => ({ value: `set:${symbol}`, label: `${shortSymbol(symbol)} · M15 · delayed` })),
-      ...watchlist.map((entry) => ({
-        value: watchPaneKey(entry.symbol, entry.timeframe_minutes),
-        label: chartInstrumentLabel(watchPaneKey(entry.symbol, entry.timeframe_minutes), goldSymbol)
+      ...setSymbols.map((symbol) => ({
+        key: `set:${symbol}`,
+        label: `${shortSymbol(symbol)} · delayed`,
+        timeframes: [15]
+      })),
+      ...[...watched.entries()].map(([symbol, frames]) => ({
+        key: `watch:${symbol}`,
+        label: shortSymbol(symbol) + (isDelayedSymbol(symbol) ? " · delayed" : ""),
+        timeframes: [...frames].sort((a, b) => a - b)
       }))
     ];
   }, [setTickers, goldSymbol, config, watchlist]);
 
-  const showWatchInstrument = useCallback((symbol: string, timeframe: number) => {
+  const setPane = useCallback((index: number, paneKey: string) => {
     setPanes((previous) => {
       const next = [...previous];
       while (next.length < 4) next.push("gold:10");
-      next[0] = watchPaneKey(symbol, timeframe);
+      next[index] = paneKey;
       return next;
     });
-    chartPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
+
+  const showWatchInstrument = useCallback((symbol: string, timeframe: number) => {
+    setPane(0, watchPaneKey(symbol, timeframe));
+    chartPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [setPane]);
 
   // Four charts at once need less height each than one. In fullscreen the CSS takes over and
   // the chart resizes itself to the cell, so this is only the starting size.
@@ -1549,28 +1746,51 @@ export default function App() {
               {visiblePanes.map((paneKey, index) => (
                 <div className="chart-cell" key={`${index}:${paneKey}`}>
                   <div className="chart-cell-head">
-                    <select
-                      value={paneKey}
-                      aria-label={`Chart ${index + 1} instrument`}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setPanes((previous) => {
-                          const next = [...previous];
-                          while (next.length < 4) next.push("gold:10");
-                          next[index] = value;
-                          return next;
-                        });
-                      }}
-                    >
-                      {/* A pane saved against a ticker that has since left set_tickers keeps its
-                          own entry, so the dropdown never renders blank. */}
-                      {(paneOptions.some((option) => option.value === paneKey)
-                        ? paneOptions
-                        : [{ value: paneKey, label: chartInstrumentLabel(paneKey, goldSymbol) }, ...paneOptions]
-                      ).map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
+                    {(() => {
+                      const symbolKey = paneSymbolKey(paneKey);
+                      const chosen = paneSymbols.find((candidate) => candidate.key === symbolKey);
+                      const current = chartInstrument(paneKey, goldSymbol);
+                      // A pane saved against something that has since left the watchlist keeps
+                      // its own entry, so neither dropdown ever renders blank.
+                      const symbols = chosen
+                        ? paneSymbols
+                        : [{ key: symbolKey, label: chartInstrumentLabel(paneKey, goldSymbol), timeframes: [] }, ...paneSymbols];
+                      const frames = chosen?.timeframes.length
+                        ? chosen.timeframes
+                        : current ? [current.timeframe] : [];
+                      return (
+                        <>
+                          <select
+                            value={symbolKey}
+                            aria-label={`Chart ${index + 1} instrument`}
+                            onChange={(event) => {
+                              const nextSymbol = event.target.value;
+                              const available = paneSymbols.find((candidate) => candidate.key === nextSymbol)?.timeframes ?? [];
+                              // Hold the timeframe across a symbol change when the new instrument
+                              // has it, so comparing two symbols on H1 takes one click, not two.
+                              const keep = current && available.includes(current.timeframe)
+                                ? current.timeframe
+                                : available[0] ?? 15;
+                              setPane(index, composePaneKey(nextSymbol, keep));
+                            }}
+                          >
+                            {symbols.map((option) => (
+                              <option key={option.key} value={option.key}>{option.label}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={String(current?.timeframe ?? frames[0] ?? 15)}
+                            aria-label={`Chart ${index + 1} timeframe`}
+                            disabled={frames.length < 2}
+                            onChange={(event) => setPane(index, composePaneKey(symbolKey, Number(event.target.value)))}
+                          >
+                            {frames.map((frame) => (
+                              <option key={frame} value={frame}>{timeframeLabel(frame)}</option>
+                            ))}
+                          </select>
+                        </>
+                      );
+                    })()}
                   </div>
                   {renderPane(paneKey)}
                 </div>

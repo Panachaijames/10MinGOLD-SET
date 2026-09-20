@@ -138,6 +138,11 @@ const TH: Record<string, string> = {
 
   // per-instrument alert settings
   "Alerts": "การแจ้งเตือน",
+  "Timeframes": "ไทม์เฟรม",
+  "Alert me on": "แจ้งเตือนที่ไทม์เฟรม",
+  "Choose at least one timeframe.": "เลือกอย่างน้อยหนึ่งไทม์เฟรม",
+  "Keep at least one timeframe, or remove the instrument.":
+    "ต้องเลือกอย่างน้อยหนึ่งไทม์เฟรม หรือลบหลักทรัพย์นี้ออก",
   "Muted": "ปิดเสียง",
   "Notify me": "แจ้งเตือนฉัน",
   "Direction": "ทิศทาง",

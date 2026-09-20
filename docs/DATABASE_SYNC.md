@@ -17,7 +17,7 @@ closed candle or lose a confirmed crossover.
 | `set_macd_history` | SET scanner | Scanner state/diagnostics | Per-bar delayed scanner values retained for 60 days; PWA candlesticks now read OHLC from `candles`. |
 | `set_holidays` | Owner | SET session gate | Thai market closures; update annually from an authoritative calendar. |
 | `settings` | Owner and server jobs | Edge Functions and SQL jobs | Tickers, kill switches, dry-run flags, alert directions, session settings, watchlist caps and push TTL. |
-| `watchlist` | Each member, through the PWA | `watch-scan`, `push-fanout` | One row per member per instrument and timeframe. RLS restricts every member to their own rows; database triggers enforce `watchlist_max_per_user` and `watchlist_max_instruments`. |
+| `watchlist` | Each member, through the PWA | `watch-scan`, `push-fanout` | One row per member per instrument **and timeframe** — the granularity the scanner and the alert ids work at. The PWA presents it grouped by symbol, so ticking a timeframe inserts a row and unticking deletes one, and the delivery columns (`notify`, `directions`, `channels`) are written across every row of a symbol at once. RLS restricts every member to their own rows; triggers enforce `watchlist_max_per_user` and `watchlist_max_instruments`, both counting rows. |
 | `notification_prefs` | Each member, through the PWA | `push-fanout` | One row per member: quiet-hours window, its timezone, and a LINE destination when they have one. RLS restricts every member to their own row. |
 | `watch_state` | `watch-scan` | PWA watchlist panel, scan gate | Scanner cursor per **distinct** `(symbol,timeframe)`, not per member: one scan serves everyone watching the same instrument. Purged a week after nobody watches it. |
 
