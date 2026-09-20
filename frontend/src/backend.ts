@@ -88,6 +88,11 @@ export interface Backend {
   ): Promise<void>;
   /** Stop watching a symbol on every timeframe at once. */
   removeWatchSymbol?(symbol: string): Promise<void>;
+  /**
+   * Ask the cloud to fetch and store candles for a symbol/timeframe nothing has yet, so a chart
+   * can show a timeframe nobody is being alerted on. Resolves to false when it could not.
+   */
+  ensureCandles?(symbol: string, timeframe: number): Promise<boolean>;
   notificationPrefs?(): Promise<NotificationPrefs>;
   saveNotificationPrefs?(prefs: Pick<NotificationPrefs, "quiet_from" | "quiet_to" | "time_zone">): Promise<void>;
   /** Sign in as a guest holding one of the owner's passcodes. */
@@ -719,6 +724,12 @@ class SupabaseBackend implements Backend {
    * The member's own preferences, or the defaults when they have never saved any. RLS means the
    * unfiltered select can only ever return this account's row.
    */
+  async ensureCandles(symbol: string, timeframe: number): Promise<boolean> {
+    const { data, error } = await this.client.functions.invoke("chart-candles", { body: { symbol, timeframe } });
+    if (error) return false;
+    return Boolean((data as { ok?: boolean } | null)?.ok);
+  }
+
   async notificationPrefs(): Promise<NotificationPrefs> {
     const { data, error } = await this.client
       .from("notification_prefs")

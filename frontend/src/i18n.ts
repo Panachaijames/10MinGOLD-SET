@@ -110,6 +110,11 @@ const TH: Record<string, string> = {
 
   // indicators and charts
   "Chart": "กราฟ",
+  "Fetching": "กำลังดึงข้อมูล",
+  "This timeframe has not been stored yet. It is being fetched now.":
+    "ยังไม่มีข้อมูลไทม์เฟรมนี้ ระบบกำลังดึงให้",
+  "Only one timeframe is published for this instrument.":
+    "หลักทรัพย์นี้มีเพียงไทม์เฟรมเดียว",
   "Chart layout": "รูปแบบการจัดกราฟ",
   "Indicators": "ตัวชี้วัด",
   "Full screen": "เต็มจอ",

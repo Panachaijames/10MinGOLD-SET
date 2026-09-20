@@ -216,6 +216,11 @@ this repository.
 - **Charts pick instrument and timeframe separately too.** Each pane has two dropdowns rather
   than one combined list, so comparing a symbol across timeframes (or two symbols on the same
   one) is a single change. Switching symbol keeps the timeframe when the new instrument has it.
+  Every instrument offers **every** supported timeframe, not only the ones it is alerted on —
+  looking at a chart is not the same as being notified. A timeframe with nothing stored is
+  fetched on demand by the `chart-candles` function the first time a pane asks for it, which
+  also covers gold away from the watcher's own timeframes (drawn from the same OANDA series the
+  cloud failover uses, since the broker symbol is not a TradingView ticker).
 - **The caps are in the database, not the UI** (`watchlist_max_per_user`, default 40;
   `watchlist_max_instruments`, default 80 across everyone), so they hold even against a
   hand-written request. Both count **symbol-and-timeframe pairs**, because that is the load the
@@ -275,7 +280,7 @@ deduplication and synchronization contract.
 
    ```powershell
    npx supabase@2.116.0 secrets set VAPID_KEYS_JWK='{"publicKey":{...},"privateKey":{...}}' VAPID_SUBJECT=mailto:you@example.com PUBLIC_APP_URL=https://<your-app>/
-   npx supabase@2.116.0 functions deploy push-fanout set-scan market-candles push-receipt gold-scan tv-webhook watch-scan symbol-search
+   npx supabase@2.116.0 functions deploy push-fanout set-scan market-candles push-receipt gold-scan tv-webhook watch-scan symbol-search chart-candles
    ```
 
    `verify_jwt = false` for these functions is already in `supabase/config.toml`; the functions check
@@ -364,7 +369,7 @@ deduplication and synchronization contract.
    instruments in the PWA's Watchlist panel.
 
    ```powershell
-   npx supabase@2.116.0 functions deploy watch-scan symbol-search
+   npx supabase@2.116.0 functions deploy watch-scan symbol-search chart-candles
    ```
 
    Members set their own delivery rules in the PWA; nothing about them needs configuring here.

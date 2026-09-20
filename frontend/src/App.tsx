@@ -42,6 +42,22 @@ function isDelayedSymbol(symbol: string): boolean {
   return symbol.startsWith("SET:");
 }
 
+/**
+ * Split "EXCHANGE:SYMBOL:TIMEFRAME" into its parts.
+ *
+ * The ticker contains a colon of its own, so the timeframe comes off the end rather than the
+ * symbol off the front. A key with no timeframe at all is one saved by an older version, which
+ * only ever meant M15.
+ */
+function splitSymbolAndTimeframe(rest: string, fallback: number): { symbol: string; timeframe: number } | null {
+  const cut = rest.lastIndexOf(":");
+  if (cut > 0) {
+    const timeframe = Number(rest.slice(cut + 1));
+    if (SUPPORTED_TIMEFRAMES.has(timeframe)) return { symbol: rest.slice(0, cut), timeframe };
+  }
+  return rest ? { symbol: rest, timeframe: fallback } : null;
+}
+
 function chartInstrument(paneKey: string, goldSymbol: string): ChartInstrument | null {
   if (paneKey.startsWith("gold:")) {
     const timeframe = Number(paneKey.slice(5));
@@ -52,18 +68,12 @@ function chartInstrument(paneKey: string, goldSymbol: string): ChartInstrument |
     return SUPPORTED_TIMEFRAMES.has(timeframe) ? { kind: "bitcoin", symbol: BITCOIN_SYMBOL, timeframe } : null;
   }
   if (paneKey.startsWith("set:")) {
-    const symbol = paneKey.slice(4);
-    return symbol ? { kind: "set", symbol, timeframe: 15 } : null;
+    const parts = splitSymbolAndTimeframe(paneKey.slice(4), 15);
+    return parts ? { kind: "set", symbol: parts.symbol, timeframe: parts.timeframe } : null;
   }
-  // watch:EXCHANGE:SYMBOL:TIMEFRAME — the ticker contains a colon of its own, so the timeframe
-  // is split off the end rather than the symbol off the front.
   if (paneKey.startsWith("watch:")) {
-    const rest = paneKey.slice(6);
-    const cut = rest.lastIndexOf(":");
-    if (cut <= 0) return null;
-    const symbol = rest.slice(0, cut);
-    const timeframe = Number(rest.slice(cut + 1));
-    return SUPPORTED_TIMEFRAMES.has(timeframe) ? { kind: "watch", symbol, timeframe } : null;
+    const parts = splitSymbolAndTimeframe(paneKey.slice(6), 15);
+    return parts ? { kind: "watch", symbol: parts.symbol, timeframe: parts.timeframe } : null;
   }
   return null;
 }
@@ -87,11 +97,10 @@ export interface PaneSymbol {
 function paneSymbolKey(paneKey: string): string {
   if (paneKey.startsWith("gold:")) return "gold";
   if (paneKey.startsWith("btc:")) return "btc";
-  if (paneKey.startsWith("set:")) return paneKey;
-  if (paneKey.startsWith("watch:")) {
-    const rest = paneKey.slice(6);
-    const cut = rest.lastIndexOf(":");
-    return cut > 0 ? `watch:${rest.slice(0, cut)}` : paneKey;
+  for (const prefix of ["set:", "watch:"]) {
+    if (!paneKey.startsWith(prefix)) continue;
+    const parts = splitSymbolAndTimeframe(paneKey.slice(prefix.length), 15);
+    return parts ? `${prefix}${parts.symbol}` : paneKey;
   }
   return paneKey;
 }
@@ -99,9 +108,7 @@ function paneSymbolKey(paneKey: string): string {
 function composePaneKey(symbolKey: string, timeframe: number): string {
   if (symbolKey === "gold") return `gold:${timeframe}`;
   if (symbolKey === "btc") return `btc:${timeframe}`;
-  // The configured SET tickers exist only as delayed M15, so their key carries no timeframe.
-  if (symbolKey.startsWith("set:")) return symbolKey;
-  if (symbolKey.startsWith("watch:")) return `${symbolKey}:${timeframe}`;
+  if (symbolKey.startsWith("set:") || symbolKey.startsWith("watch:")) return `${symbolKey}:${timeframe}`;
   return symbolKey;
 }
 
@@ -110,7 +117,6 @@ function chartInstrumentLabel(paneKey: string, goldSymbol: string): string {
   if (!instrument) return paneKey;
   if (instrument.kind === "gold") return `${goldSymbol} · ${timeframeLabel(instrument.timeframe)}`;
   if (instrument.kind === "bitcoin") return `BTCUSDT · ${timeframeLabel(instrument.timeframe)}`;
-  if (instrument.kind === "set") return `${shortSymbol(instrument.symbol)} · M15 · delayed`;
   const suffix = isDelayedSymbol(instrument.symbol) ? " · delayed" : "";
   return `${shortSymbol(instrument.symbol)} · ${timeframeLabel(instrument.timeframe)}${suffix}`;
 }
@@ -890,6 +896,10 @@ export default function App() {
   });
   const [candleSeries, setCandleSeries] = useState<Record<string, CandleSeries>>({});
   const [chartError, setChartError] = useState("");
+  const [fetchingCandles, setFetchingCandles] = useState(false);
+  // Symbol|timeframe pairs already asked for on demand, so one unavailable series cannot turn
+  // every refresh into another round of requests.
+  const fetchAttempts = useRef(new Set<string>());
   const [setTickers, setSetTickers] = useState<SetTickerState[]>([]);
   const [setPanelError, setSetPanelError] = useState("");
   const [selectedSet, setSelectedSet] = useState<string>("");
@@ -978,6 +988,35 @@ export default function App() {
     }
     if (Object.keys(loaded).length) setCandleSeries((previous) => ({ ...previous, ...loaded }));
     setChartError([...new Set(failures)].join(" · "));
+
+    // A timeframe nobody is alerted on has nothing stored for it. Ask the cloud to fetch it once,
+    // then read it back. Attempts are remembered so a genuinely unavailable series is not
+    // re-requested on every refresh.
+    if (!backend.ensureCandles) return;
+    const missing = Object.entries(loaded)
+      .filter(([, series]) => series.candles.length === 0)
+      .map(([key]) => key)
+      .filter((key) => !fetchAttempts.current.has(key));
+    if (!missing.length) return;
+    for (const key of missing) fetchAttempts.current.add(key);
+    setFetchingCandles(true);
+    try {
+      const filled: Record<string, CandleSeries> = {};
+      for (const key of missing) {
+        const instrument = requestedInstruments.find(
+          (candidate) => candleSeriesKey(candidate.symbol, candidate.timeframe) === key
+        );
+        if (!instrument) continue;
+        const ok = await backend.ensureCandles(instrument.symbol, instrument.timeframe);
+        if (!ok) continue;
+        filled[key] = await backend.candles(instrument.symbol, instrument.timeframe);
+      }
+      if (Object.keys(filled).length) setCandleSeries((previous) => ({ ...previous, ...filled }));
+    } catch (fetchError) {
+      setChartError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+    } finally {
+      setFetchingCandles(false);
+    }
   }, [authed, requestedInstruments]);
 
   // A light refresh is the one a watcher heartbeat triggers: it moves the forming candle and
@@ -1354,29 +1393,31 @@ export default function App() {
    */
   const paneSymbols = useMemo<PaneSymbol[]>(() => {
     const setSymbols = [...new Set(setTickers.map((row) => row.symbol))];
-    // Gold's timeframes come from the watcher itself (TIMEFRAMES in .env), so widening them on
-    // the laptop puts them in this dropdown without another change here.
-    const goldFrames = (config?.timeframes?.length ? config.timeframes : GOLD_TIMEFRAMES)
-      .filter((frame) => SUPPORTED_TIMEFRAMES.has(frame))
-      .sort((a, b) => a - b);
-    const watched = new Map<string, number[]>();
-    for (const entry of watchlist) {
-      watched.set(entry.symbol, [...(watched.get(entry.symbol) ?? []), entry.timeframe_minutes]);
-    }
+    // Looking at a chart is not the same as being alerted on it, so every instrument offers every
+    // supported timeframe regardless of what is on anybody's watchlist. A timeframe with nothing
+    // stored yet is fetched on demand when the pane asks for it.
+    const allFrames = WATCH_TIMEFRAMES.map((frame) => frame.minutes);
+    // The local backend has only what the laptop watcher itself publishes.
+    const goldFrames = backend.kind === "supabase"
+      ? allFrames
+      : (config?.timeframes?.length ? config.timeframes : GOLD_TIMEFRAMES)
+          .filter((frame) => SUPPORTED_TIMEFRAMES.has(frame))
+          .sort((a, b) => a - b);
+    const watchedSymbols = [...new Set(watchlist.map((entry) => entry.symbol))];
     return [
       { key: "gold", label: goldSymbol, timeframes: goldFrames },
       ...(backend.kind === "supabase"
-        ? [{ key: "btc", label: "BTCUSDT", timeframes: [10, 15] }]
+        ? [{ key: "btc", label: "BTCUSDT", timeframes: allFrames }]
         : []),
       ...setSymbols.map((symbol) => ({
         key: `set:${symbol}`,
         label: `${shortSymbol(symbol)} · delayed`,
-        timeframes: [15]
+        timeframes: allFrames
       })),
-      ...[...watched.entries()].map(([symbol, frames]) => ({
+      ...watchedSymbols.map((symbol) => ({
         key: `watch:${symbol}`,
         label: shortSymbol(symbol) + (isDelayedSymbol(symbol) ? " · delayed" : ""),
-        timeframes: [...frames].sort((a, b) => a - b)
+        timeframes: allFrames
       }))
     ];
   }, [setTickers, goldSymbol, config, watchlist]);
@@ -1421,6 +1462,14 @@ export default function App() {
             : backend.kind === "supabase"
               ? "Gold candles appear after the laptop watcher or cloud failover publishes them."
               : "Candles appear after the first evaluated MT5 bar.";
+      if (fetchingCandles) {
+        return (
+          <div className="empty-state compact">
+            <strong>{t("Fetching")} {name} {timeframeLabel(instrument.timeframe)}…</strong>
+            <p>{t("This timeframe has not been stored yet. It is being fetched now.")}</p>
+          </div>
+        );
+      }
       return (
         <div className="empty-state compact">
           <strong>No {name} candles yet for {timeframeLabel(instrument.timeframe)}</strong>
@@ -1782,6 +1831,7 @@ export default function App() {
                             value={String(current?.timeframe ?? frames[0] ?? 15)}
                             aria-label={`Chart ${index + 1} timeframe`}
                             disabled={frames.length < 2}
+                            title={frames.length < 2 ? t("Only one timeframe is published for this instrument.") : undefined}
                             onChange={(event) => setPane(index, composePaneKey(symbolKey, Number(event.target.value)))}
                           >
                             {frames.map((frame) => (

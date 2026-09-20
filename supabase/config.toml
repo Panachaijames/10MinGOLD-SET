@@ -405,6 +405,11 @@ verify_jwt = false
 [functions.watch-scan]
 verify_jwt = false
 
+# Asked for by the PWA when a pane wants a timeframe nothing has stored yet. It verifies the
+# caller's membership itself, and only fetches instruments this deployment already knows.
+[functions.chart-candles]
+verify_jwt = false
+
 # Called by the PWA with a member's own JWT, which this function verifies itself so it can also
 # check membership: a signed-in account that never redeemed a passcode must not be able to spend
 # the project's search quota.
